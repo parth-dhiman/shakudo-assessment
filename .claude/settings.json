@@ -1,4 +1,5 @@
 {
+  "apiKeyHelper": "echo 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",
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
   "permissions": {
     "allow": [

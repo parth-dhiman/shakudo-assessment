@@ -90,5 +90,83 @@ Source — what kubectl / the controller actually does
 - Python client API docs: https://github.com/kubernetes-client/python/tree/master/kubernetes/docs
 
 <!-- PROJECT:START -->
-Filled at the start of the assessment from TASK.md. Edit only between these markers.
+## 1. Goal
+Build a REST API that creates, monitors and manages Kubernetes **Deployments** on the local minikube cluster (real cluster, no mocks), with computed health.
+Primary objects: Deployment, owned ReplicaSets and Pods (read via ownerReferences); Namespace (created on demand).
+Clients: one UI (web page or CLI, see D6), both HTTP-only clients of the API.
+
+## 2. Hard rules (from TASK.md, beyond the fixed sections above)
+- [ ] "a working system deployed against real Kubernetes, not a mockup with fake data"; live demo. Unit tests use only recorded kubectl snapshots.
+- [ ] Kubernetes access through a client library (never a kubectl subprocess).
+- [ ] POST "Returns the created deployment with its UID and initial status"; create the namespace "if it doesn't exist".
+- [ ] GET list: namespace filter via query parameter (`?namespace=`); "current status from the cluster, not cached data".
+- [ ] GET detail: replicas desired/ready/available/unavailable, per pod name/phase/restart count/container states with reason/node, conditions, creation + last update timestamp.
+- [ ] Health enum exactly HEALTHY, DEGRADED, FAILING, PROGRESSING, UNKNOWN. FAILING = "no replicas ready or CrashLoopBackOff detected".
+- [ ] `labels` apply to "the deployment and pod template". `command`/`args` optional overrides.
+- [ ] Restart "should patch the pod template annotation to force new pods". PATCH supports scale + image (rolling update).
+- [ ] DELETE cascades to owned ReplicaSets and Pods.
+- [ ] Errors are structured JSON: 400 (bad image, negative replicas, invalid resource values, DNS-incompatible name, missing required field), 404 unknown ID, 409 duplicate name in namespace, **500** "with a meaningful message" when a Kubernetes call fails ("insufficient resources, API server unreachable"). `app/api/error_handlers.py` returns 503 for unreachable: TASK says 500, change it.
+- [ ] Scenario to pass: nginx:latest x3, then nginx:nonexistent: ImagePullBackOff visible at deployment AND pod level.
+- [ ] UI: green/yellow/red health, detail view (counts, pod table, conditions), scale input, restart, delete with confirmation, poll every 5-10 s, namespace selector (web); CLI equivalents if CLI.
+- [ ] Tests: validation, lifecycle (create, list, scale, delete, gone), status-mapping unit, one error case (409).
+- [ ] README: how to run, assumptions, "what you'd do differently with more time". Keep a running list of where AI output was wrong (review topic).
+- [ ] Many small commits, no squash. Deliver private repo or zip. Scope: Parts 1-3 before any stretch.
+
+## 3. Requirement map (IDs are ours; TASK.md has none)
+| ID | Behaviour | Files |
+|---|---|---|
+| A1 | POST /api/deployments: validate, ensure namespace, create, return uid + status | api/deployments, schema/deployments, k8s/deployments |
+| A2 | GET list across namespaces, managed-by label selector, `?namespace=`, health per item | api, k8s, analysis/health; tests/integration |
+| A3 | GET /:id detail: counts, pods, conditions, health | api, k8s, analysis/ownership+pods+health |
+| A4 | PATCH replicas and/or image | api, schema (patch model), k8s |
+| A5 | DELETE with cascade | api, k8s |
+| A6 | POST /:id/restart (template annotation) | api, k8s |
+| A7 | Request schema and defaults (pydantic, extra=forbid) | schema/deployments, schema/common; tests/unit/test_input.py |
+| A8 | Error mapping and bodies | api/error_handlers, exceptions |
+| M1-M2 | Deployment-level and pod-level status extraction | analysis/pods, analysis/ownership; tests/unit/test_pods.py |
+| M3 | Aggregated health enum | analysis/health, analysis/rollout; tests/unit/test_health.py |
+| U1-U5 | Dashboard, detail, actions, polling, namespace filter | web/index.html, app.js, style.css (or cli/) |
+| T1-T4 | Validation, lifecycle, status mapping, errors | tests/unit/test_input.py, test_health.py; tests/integration/test_lifecycle.py, test_errors.py, test_bad_image.py |
+| S1-S5 | Stretch: logs, quota, history/rollback, probes, Service | cut unless Parts 1-4 are done |
+
+Scaffold renames (placeholders, not done): `app/api/obj.py`, `app/schema/obj.py`, `app/k8s/services/obj.py` become `app/api/deployments.py`, `app/schema/deployments.py`, `app/k8s/deployments.py` (drop `services/` per Architecture); `/api/obj` becomes `/api/deployments`. The scaffold create is a spike (hardcoded nginx, replicas 3, no `_request_timeout`, `MANAGED_BY_VALUE = "test-run"`).
+
+## 4. Decisions owed (ask before implementing; all PENDING)
+- D1 DECIDED: UID; `?namespace=` is an optional filter (wrong namespace -> 404). `:id` meaning. Options: UID / `namespace/name` / name + `?namespace=`. Rec: UID. CLI `status/scale/restart/delete <id>` take no namespace, names repeat across namespaces, POST returns the UID; resolve by listing managed Deployments and matching `metadata.uid` (field selectors don't cover uid), no cache.
+- D2 PENDING Required/optional + defaults + `env` shape. Rec: required `name`, `image`; defaults namespace=default, replicas=1, port none, no resources, `env` = `[{"name","value"}]` (the EnvVar shape). Reasoning: no requests means BestEffort QoS; limits alone make requests default to limits; requests must be <= limits (server 422).
+- D3 DECIDED (rec, with "0 ready -> FAILING" checked after PROGRESSING so new deployments show PROGRESSING; any live owned pod counts, not only current-revision). Health precedence and edge cases. Rec: UNKNOWN (status not observed yet) > FAILING > PROGRESSING > DEGRADED > HEALTHY. FAILING also when a current-revision pod waits in ImagePullBackOff/ErrImagePull/CrashLoopBackOff or Progressing=False/ProgressDeadlineExceeded, even if old pods still serve (the required scenario). Replicas=0 -> HEALTHY (Available is True with 0 desired). Unschedulable Pending pods -> FAILING. Reasoning: the rollout controller never shows image pull errors in conditions until the 600 s deadline.
+- D4 PENDING PATCH body. Options: replicas+image only / also env, resources, labels. Rec: `replicas`, `image` only, at least one, extra fields 400. Selector is immutable and a template change is what triggers a rollout.
+- D5 propagation DECIDED: Background. Response code still PENDING. DELETE propagation + response. Options: Background / Foreground / Orphan; 204 / 200+body. Rec: Background + 204 (object disappears at once, GC removes RS and Pods asynchronously; Foreground keeps the Deployment visible until dependents are gone).
+- D6 PENDING UI: web or CLI. Rec: web (colour coding and polling are explicit requirements, best live demo); CLI only if time remains.
+- D7 PENDING Labels and selector. Rec: system labels `app.kubernetes.io/name=<name>` + managed-by on Deployment and pod template; selector = name label only; user labels may not override reserved keys (400). Reasoning: `spec.selector` is immutable and must match template labels; a user label in it would break PATCH/relabel.
+- D8 PENDING Response shapes and "last update". Rec: list item = identity + counts + health + timestamps (no pods); detail adds pods and conditions; POST returns detail-shaped body (health likely PROGRESSING/UNKNOWN); `lastUpdated` = max(conditions[].lastUpdateTime), falling back to creationTimestamp (scale does not change it; document).
+
+## 5. Kubernetes semantics to verify
+- A3/M2 ownership: controller ownerReferences Deployment -> ReplicaSet -> Pod, old ReplicaSets included during rollout. `kubectl get rs,pods -o json`; owners-dependents doc.
+- M1 counts: `kubectl explain deployment.status`; omitted fields (e.g. unavailableReplicas) mean 0.
+- M3 rollout complete / in progress / failed: rollout_status.go and deployment_util.go (generation vs observedGeneration, updatedReplicas, ProgressDeadlineExceeded). `kubectl explain deployment.spec.progressDeadlineSeconds`.
+- M3 ImagePullBackOff and CrashLoopBackOff: live pods, `status.containerStatuses[].state.waiting.reason` vs `lastState.terminated`; pod-lifecycle doc. Phase stays Pending/Running while waiting.
+- M3 scheduling: `kubectl explain pod.status.conditions` (PodScheduled False, Unschedulable).
+- M3 replicas=0: Available condition value, via live cluster.
+- D8: `kubectl explain deployment.status.conditions.lastUpdateTime`.
+- A1 validation: Deployment name is a DNS subdomain but pod hostnames need a label (<=63); verify with `kubectl apply --dry-run=server`. Image strings are not validated by the API server (InvalidImageName only at runtime). Quantity grammar, negatives, requests > limits: quantity doc + dry-run.
+- A1 namespace: create-if-missing race; Terminating namespace returns 403 on create; `kubectl explain namespace.status.phase`.
+- A8 status mapping: Status `reason` values AlreadyExists (409), NotFound (404), Invalid (422), Forbidden for quota (403); api-conventions.
+- A5 cascade: `kubectl explain deleteoptions.propagationPolicy`; garbage-collection doc; confirm RS and Pods vanish after Background delete.
+- A6 restart: objectrestarter.go (annotation `kubectl.kubernetes.io/restartedAt` under `spec.template.metadata.annotations`, patch type).
+- A4 scale/image: patch content type in python client; scale changes no revision, image change does (`deployment.kubernetes.io/revision`).
+- D1 id lookup: `kubectl get deploy -A --field-selector metadata.uid=x` (expected unsupported).
+
+## 6. Build order (each step ends with unit tests green and /checkpoint)
+Before step 1: ask all PENDING decisions in one message.
+1. Rename scaffold; full A7 schema; validation matrix test T1; 503 -> 500 fix (~20 min).
+2. k8s build + create: labels, selector, resources, env, command, namespace, `_request_timeout` constant; POST returns uid+status; integration 409 test (T4).
+3. Read path: managed-label list, `?namespace=`, id resolution, 404, GET list/detail raw.
+4. analysis: ownership + pod summaries; record fixtures (healthy, bad image, crashloop, mid-rollout) with kubectl; tests.
+5. analysis: rollout + health enum; table-driven T3 on fixtures; wire into GET list/detail (demo core).
+6. PATCH (replicas, image), restart, DELETE; unit tests for patch bodies.
+7. Integration lifecycle T2 and bad-image scenario test against minikube.
+8. Web: dashboard, colour coding, namespace filter, 5 s polling.
+9. Web: detail view, scale/restart/delete-confirm actions.
+10. README (assumptions, decisions, what's cut, AI-corrections list), demo rehearsal on live cluster, full test run. Stretch only after this.
 <!-- PROJECT:END -->

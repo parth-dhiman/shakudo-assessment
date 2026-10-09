@@ -7,6 +7,14 @@ import re
 
 _NAMECHECK_RE = re.compile(r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?")
 
+# -------------------- UID --------------------
+
+# metadata.uid is a UUID (https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#uids).
+_UID_RE = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+    re.IGNORECASE,
+)
+
 # ---------------- Image --------------------
 
 # Image reference grammar (same rules Docker and the kubelet use to parse image names).
@@ -36,7 +44,15 @@ def validate_dns_label(v: str) -> str:
         )
     return v
 
-def validate_image(v: str) -> str: 
+def validate_uid(v: str) -> str:
+    if not _UID_RE.fullmatch(v):
+        raise ValueError(
+            "Must be a UUID, like 'e5f1f2f8-2939-43ed-8e53-c8c980b220e2'."
+        )
+    # The API server emits lowercase UIDs, and lookups compare strings.
+    return v.lower()
+
+def validate_image(v: str) -> str:
     if not _IMAGE_RE.fullmatch(v):
         raise ValueError(
             "Must be a valid image reference, "

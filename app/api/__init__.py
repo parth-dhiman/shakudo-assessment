@@ -25,4 +25,4 @@ def index() -> Response:
 # ========== Routes ==========
 
 # Each module registers its endpoints on `app` when imported, so these imports stay last.
-from app.api import obj  # noqa: E402, F401
+from app.api import deployments  # noqa: E402, F401
