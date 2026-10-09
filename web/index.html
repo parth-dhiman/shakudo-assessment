@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Deployments</title>
+  <link rel="icon" href="data:,">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600&family=Inter:wght@400;500&display=swap">
+  <link rel="stylesheet" href="/web/style.css">
+  <script src="/web/app.js" defer></script>
+</head>
+<body>
+  <header class="container site-header" id="site-header">
+    <div class="header-inner">
+      <a class="brand" href="#/">
+        <span class="label">Kubernetes</span>
+        <span class="wordmark">Deployments</span>
+      </a>
+      <div class="header-tools">
+        <div class="header-controls">
+          <div id="ns-picker">
+            <select class="select" id="ns-select" aria-label="Namespace">
+              <option value="">All namespaces</option>
+            </select>
+          </div>
+          <button type="button" class="btn btn-primary" id="new-button">New deployment</button>
+        </div>
+        <p class="updated" id="updated"></p>
+      </div>
+    </div>
+  </header>
+
+  <main class="container" id="main">
+    <!-- Dashboard: #/ and #/?namespace=<ns> -->
+    <section class="view" id="dashboard-view">
+      <header class="view-head">
+        <h1 class="page-title" id="dash-title">All deployments</h1>
+        <p class="summary" id="dash-summary" hidden></p>
+      </header>
+      <p class="muted" id="dash-message">Loading…</p>
+      <div class="empty" id="dash-empty" hidden>
+        <p class="muted" id="dash-empty-text">No deployments yet</p>
+        <button type="button" class="btn btn-secondary" id="empty-new-button">New deployment</button>
+      </div>
+      <div class="table-wrap" id="dash-table" hidden>
+        <table class="table table-links">
+          <thead>
+            <tr>
+              <th scope="col">Status</th>
+              <th scope="col">Name</th>
+              <th scope="col">Namespace</th>
+              <th scope="col" class="num">Ready</th>
+              <th scope="col" class="num">Available</th>
+              <th scope="col">Age</th>
+              <th scope="col">Updated</th>
+            </tr>
+          </thead>
+          <tbody id="dash-rows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Detail: #/d/<uid> -->
+    <section class="view" id="detail-view" hidden>
+      <a class="back-link" id="back-link" href="#/">← All deployments</a>
+      <p class="muted" id="detail-message">Loading…</p>
+      <div id="detail-body" hidden>
+        <header class="detail-head">
+          <p class="label detail-namespace" id="d-namespace"></p>
+          <div class="title-row">
+            <h1 class="page-title" id="d-name"></h1>
+            <span class="status status-unknown" id="d-status"><span class="dot" aria-hidden="true"></span><span class="status-word"></span></span>
+          </div>
+          <dl class="meta">
+            <div><dt class="label">Created</dt><dd><time id="d-created"></time></dd></div>
+            <div><dt class="label">Updated</dt><dd><time id="d-updated"></time></dd></div>
+            <div><dt class="label">UID</dt><dd><code class="mono uid" id="d-uid"></code></dd></div>
+          </dl>
+          <p class="images" id="d-images-line" hidden>
+            <span class="label" id="d-images-label">Running image</span>
+            <span class="mono" id="d-images"></span>
+          </p>
+        </header>
+
+        <section class="section" aria-label="Replicas">
+          <dl class="counts">
+            <div><dt class="label">Desired</dt><dd id="count-desired">—</dd></div>
+            <div><dt class="label">Ready</dt><dd id="count-ready">—</dd></div>
+            <div><dt class="label">Available</dt><dd id="count-available">—</dd></div>
+            <div><dt class="label">Unavailable</dt><dd id="count-unavailable">—</dd></div>
+          </dl>
+        </section>
+
+        <section class="section actions" aria-label="Actions">
+          <form class="action" id="scale-form">
+            <label class="label" for="scale-input">Replicas</label>
+            <div class="action-controls">
+              <input class="input input-number" id="scale-input" type="number" min="0" step="1" required inputmode="numeric">
+              <button type="submit" class="btn btn-secondary" id="scale-button">Apply</button>
+            </div>
+          </form>
+          <form class="action" id="image-form">
+            <label class="label" for="image-input">Image</label>
+            <div class="action-controls">
+              <input class="input input-image" id="image-input" type="text" placeholder="nginx:1.27" required autocomplete="off" autocapitalize="off" spellcheck="false">
+              <button type="submit" class="btn btn-secondary" id="image-button">Update</button>
+            </div>
+          </form>
+          <button type="button" class="btn btn-secondary" id="restart-button">Restart</button>
+          <button type="button" class="btn btn-danger" id="delete-button">Delete</button>
+        </section>
+
+        <section class="section" aria-labelledby="pods-title">
+          <h2 class="section-title" id="pods-title">Pods</h2>
+          <p class="muted" id="pods-empty" hidden>No pods</p>
+          <div class="table-wrap" id="pods-table">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th scope="col">Pod</th>
+                  <th scope="col">Phase</th>
+                  <th scope="col" class="num">Ready</th>
+                  <th scope="col" class="num">Restarts</th>
+                  <th scope="col">Node</th>
+                  <th scope="col">State</th>
+                </tr>
+              </thead>
+              <tbody id="pods-rows"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="section" aria-labelledby="conditions-title">
+          <h2 class="section-title" id="conditions-title">Conditions</h2>
+          <p class="muted" id="conditions-empty" hidden>No conditions yet</p>
+          <div class="table-wrap" id="conditions-table">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th scope="col">Type</th>
+                  <th scope="col">Status</th>
+                  <th scope="col">Reason</th>
+                  <th scope="col">Message</th>
+                  <th scope="col">Last update</th>
+                </tr>
+              </thead>
+              <tbody id="conditions-rows"></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+    </section>
+  </main>
+
+  <!-- New deployment -->
+  <div class="modal" id="new-modal" hidden>
+    <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="new-title">
+      <h2 class="modal-title" id="new-title">New deployment</h2>
+      <form id="new-form">
+        <div class="field">
+          <label class="label" for="new-name">Name</label>
+          <input class="input" id="new-name" type="text" required autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="new-name-error">
+          <p class="field-error" id="new-name-error"></p>
+        </div>
+        <div class="field">
+          <label class="label" for="new-namespace">Namespace</label>
+          <input class="input" id="new-namespace" type="text" placeholder="optional" list="ns-options" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="new-namespace-error">
+          <datalist id="ns-options"></datalist>
+          <p class="field-error" id="new-namespace-error"></p>
+        </div>
+        <div class="field">
+          <label class="label" for="new-image">Image</label>
+          <input class="input" id="new-image" type="text" placeholder="nginx:latest" required autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="new-image-error">
+          <p class="field-error" id="new-image-error"></p>
+        </div>
+        <div class="field">
+          <label class="label" for="new-replicas">Replicas</label>
+          <input class="input input-number" id="new-replicas" type="number" min="0" step="1" placeholder="optional" inputmode="numeric" aria-describedby="new-replicas-error">
+          <p class="field-error" id="new-replicas-error"></p>
+        </div>
+        <div class="form-error" id="new-error" role="alert" hidden></div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-secondary" data-close>Cancel</button>
+          <button type="submit" class="btn btn-primary" id="new-submit">Create</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Delete confirmation -->
+  <div class="modal" id="delete-modal" hidden>
+    <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="delete-title" aria-describedby="delete-text">
+      <h2 class="modal-title" id="delete-title">Delete deployment?</h2>
+      <p class="modal-text" id="delete-text">This removes the deployment and its ReplicaSets and pods from <span class="mono" id="delete-namespace"></span>.</p>
+      <form id="delete-form">
+        <div class="field">
+          <label class="field-label" for="delete-confirm">Type <span class="mono" id="delete-confirm-name"></span> to confirm</label>
+          <input class="input" id="delete-confirm" type="text" autocomplete="off" autocapitalize="off" spellcheck="false">
+        </div>
+        <div class="form-error" id="delete-error" role="alert" hidden></div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-secondary" data-close>Cancel</button>
+          <button type="submit" class="btn btn-danger" id="delete-submit" disabled>Delete</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="toasts" id="toasts" aria-live="polite"></div>
+</body>
+</html>

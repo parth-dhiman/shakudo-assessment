@@ -3,3 +3,4 @@ kubernetes
 pydantic
 Werkzeug
 pytest
+requests
