@@ -1,11 +1,19 @@
 # Standard imports.
 import re
 
+# Third-party imports.
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+)
+
 # ==================== Helper RegEx ====================
 
 # -------------------- DNS Label --------------------
 
-_NAMECHECK_RE = re.compile(r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?")
+# RFC 1035 label: Service names must start with a letter, so the same name works for the Deployment and its Service.
+# https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#rfc-1035-label-names
+_NAMECHECK_RE = re.compile(r"[a-z]([a-z0-9-]{0,61}[a-z0-9])?")
 
 # -------------------- UID --------------------
 
@@ -34,13 +42,17 @@ _IMAGE_RE = re.compile(
     rf"(?:@{_IMAGE_DIGEST})?"                                   # optional "@digest"
 )
 
+# ---------------- Quantity-Related --------------------
+
+MAX_INT32 = 2_147_483_647
+
 # ==================== Helper Functions ====================
 
 def validate_dns_label(v: str) -> str:
     if not _NAMECHECK_RE.fullmatch(v):
         raise ValueError(
             "Must be lowercase letters, digits, or '-', "
-            "start and end with a letter or digit, max 63 characters."
+            "start with a letter, end with a letter or digit, max 63 characters."
         )
     return v
 
@@ -59,3 +71,10 @@ def validate_image(v: str) -> str:
             "like 'busybox', 'busybox:1.36', or 'ghcr.io/org/app:v1'."
         )
     return v
+
+# ==================== Shared Class(es) ====================
+
+class ForbidExtraFields(BaseModel):
+    model_config: ConfigDict = ConfigDict(
+        extra = "forbid",
+    ) 

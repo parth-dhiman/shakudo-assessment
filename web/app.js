@@ -3,6 +3,7 @@
 // ========== Constants ==========
 
 const POLL_MS = 5000;
+const LOG_MAX_LINES = 1000; // lines kept in the log panel; older ones are dropped
 const STATUSES = ["HEALTHY", "PROGRESSING", "DEGRADED", "FAILING", "UNKNOWN"];
 
 // Waiting reasons that mean a container cannot start; shown in the failing colour.
@@ -19,6 +20,8 @@ const CREATE_FIELDS = new Map([
   ["name", "new-name"],
   ["namespace", "new-namespace"],
   ["image", "new-image"],
+  ["resources.requests.cpu", "new-cpu"],
+  ["resources.requests.memory", "new-memory"],
   ["replicas", "new-replicas"],
 ]);
 
@@ -41,6 +44,9 @@ const dashboard = { namespace: undefined, hasData: false, rows: new Map() };
 const detail = { uid: null, data: null, scaleDirty: false, signatures: new Map() };
 
 const deletion = { target: null, busy: false };
+
+// The detail view's log stream. replace: the next line starts a fresh view (each connection resends the last lines).
+const logs = { uid: null, pod: null, previous: false, source: null, replace: false, unavailable: false };
 
 let activeModal = null;
 let modalReturnFocus = null;
@@ -107,6 +113,8 @@ const api = {
   patch: (uid, body) => request("PATCH", deploymentPath(uid), body),
   restart: (uid) => request("POST", `${deploymentPath(uid)}/restart`),
   remove: (uid) => request("DELETE", deploymentPath(uid)),
+  // A Server-Sent Events stream, opened with EventSource rather than fetched.
+  logsUrl: (uid, pod, previous) => `${deploymentPath(uid)}/logs?pod=${encodeURIComponent(pod)}${previous ? "&previous=true" : ""}`,
 };
 
 function isAbort(err) {
@@ -264,6 +272,7 @@ function onRouteChange() {
   $("ns-picker").hidden = isDetail;
   if (isDetail) enterDetail(route);
   else enterDashboard(route);
+  if (!isDetail) closeLogStream();
 
   if (previous.view !== route.view) window.scrollTo(0, 0);
   restartPolling();
@@ -431,6 +440,7 @@ function enterDetail(route) {
   detail.scaleDirty = false;
   $("scale-input").value = detail.data?.replicas?.desired ?? "";
   $("image-input").value = "";
+  resetLogs(route.uid);
 }
 
 function showDetailMessage(text) {
@@ -461,6 +471,7 @@ function renderDetail(deployment) {
   syncScaleInput(replicas.desired);
   renderPods(pods);
   renderConditions(deployment.conditions || []);
+  syncLogPods(pods);
 }
 
 function renderImages(pods) {
@@ -548,6 +559,103 @@ function conditionRow(condition) {
     h("td", { class: "cell-message" }, condition.message || "—"),
     h("td", null, timeElement(condition.lastUpdateTime)),
   );
+}
+
+// ========== Logs ==========
+
+// The selected pod's log arrives over Server-Sent Events: the last 100 lines, then each new line as it is written.
+// EventSource reconnects by itself when the server ends a live stream (container restarted, or a quiet spell).
+
+function resetLogs(uid) {
+  closeLogStream();
+  Object.assign(logs, { uid, pod: null, previous: false, replace: false, unavailable: false });
+  $("logs-pod").replaceChildren();
+  $("logs-previous").checked = false;
+  $("logs-output").replaceChildren();
+  setLogStatus("");
+}
+
+function syncLogPods(pods) {
+  const names = pods.map((pod) => pod.name).sort(compareText);
+  const select = $("logs-pod");
+  if ([...select.options].map((option) => option.value).join("\n") !== names.join("\n")) {
+    select.replaceChildren(...names.map((name) => h("option", { value: name }, name)));
+  }
+  select.disabled = names.length === 0;
+  if (names.length === 0) {
+    closeLogStream();
+    logs.pod = null;
+    $("logs-output").replaceChildren();
+    setLogStatus("No pods");
+    return;
+  }
+  // Keep following the chosen pod; once it is gone (e.g. a rollout replaced it), follow the first one.
+  if (!names.includes(logs.pod)) {
+    logs.pod = names[0];
+    openLogStream();
+  }
+  select.value = logs.pod;
+}
+
+function logLabel() {
+  return logs.previous ? "Previous container" : "Live";
+}
+
+function openLogStream() {
+  closeLogStream();
+  if (!logs.pod) return;
+  $("logs-output").replaceChildren();
+  logs.unavailable = false;
+  setLogStatus("Connecting…");
+
+  const source = new EventSource(api.logsUrl(logs.uid, logs.pod, logs.previous));
+  logs.source = source;
+  source.addEventListener("open", () => {
+    logs.replace = true;
+    if (!logs.unavailable) setLogStatus(logLabel());
+  });
+  source.addEventListener("message", (event) => appendLogLine(event.data));
+  // e.g. a container still waiting for its image: Kubernetes' reason, shown until a line arrives.
+  source.addEventListener("unavailable", (event) => {
+    logs.unavailable = true;
+    setLogStatus(event.data);
+  });
+  // A previous container's log is complete; a live stream reconnects by itself.
+  source.addEventListener("end", () => {
+    if (!logs.previous) return;
+    source.close();
+    if (logs.source === source) logs.source = null;
+  });
+  // The connection itself (named "unavailable" events are separate). CLOSED: the server refused, e.g. a 404.
+  source.addEventListener("error", () => {
+    if (source.readyState === EventSource.CLOSED) setLogStatus("Logs unavailable", true);
+  });
+}
+
+function closeLogStream() {
+  if (logs.source) logs.source.close();
+  logs.source = null;
+}
+
+function appendLogLine(text) {
+  const output = $("logs-output");
+  if (logs.replace) {
+    logs.replace = false;
+    logs.unavailable = false;
+    setLogStatus(logLabel());
+    output.replaceChildren();
+  }
+  // Stay pinned to the newest line unless the reader has scrolled up.
+  const pinned = output.scrollHeight - output.scrollTop - output.clientHeight < 24;
+  output.append(h("span", { class: "log-line" }, text));
+  while (output.childElementCount > LOG_MAX_LINES) output.firstElementChild.remove();
+  if (pinned) output.scrollTop = output.scrollHeight;
+}
+
+function setLogStatus(text, failing = false) {
+  const status = $("logs-status");
+  setText(status, text);
+  status.classList.toggle("is-failing", failing);
 }
 
 // ========== Detail actions ==========
@@ -692,6 +800,13 @@ function buildCreateBody() {
   }
   const replicas = $("new-replicas").value;
   if (replicas !== "") body.replicas = Number(replicas);
+  // Requests are required; an empty one is left out so the server reports it as missing under its input.
+  const requests = {};
+  for (const key of ["cpu", "memory"]) {
+    const value = $(CREATE_FIELDS.get(`resources.requests.${key}`)).value.trim();
+    if (value !== "") requests[key] = value;
+  }
+  body.resources = { requests };
   return body;
 }
 
@@ -889,6 +1004,7 @@ async function pollDetail(uid, signal, token) {
       // Deleted elsewhere (404) or not a valid UID (400): stop polling this UID.
       setConnection(null);
       detail.data = null;
+      closeLogStream();
       showDetailMessage(err.status === 404 ? "This deployment no longer exists." : errorSummary(err));
       return false;
     }
@@ -964,6 +1080,14 @@ function bindEvents() {
   $("image-form").addEventListener("submit", onImageSubmit);
   $("restart-button").addEventListener("click", onRestart);
   $("delete-button").addEventListener("click", openDeleteModal);
+  $("logs-pod").addEventListener("change", (event) => {
+    logs.pod = event.target.value;
+    openLogStream();
+  });
+  $("logs-previous").addEventListener("change", (event) => {
+    logs.previous = event.target.checked;
+    openLogStream();
+  });
 
   $("new-form").addEventListener("submit", onNewSubmit);
   $("delete-confirm").addEventListener("input", updateDeleteButton);

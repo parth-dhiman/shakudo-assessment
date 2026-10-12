@@ -11,8 +11,9 @@ from werkzeug.test import TestResponse
 # Script-Level Constants.
 _BASE_API_URL: str = "/api/deployments"
 _BASE_SPEC: Dict[str, Any] = {
-    "name":  "hello",
-    "image": "busybox",
+    "name":      "hello",
+    "image":     "busybox",
+    "resources": {"requests": {"cpu": "50m", "memory": "32Mi"}},
 }
 
 def _create_deployment(

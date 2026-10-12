@@ -2,48 +2,15 @@
   "apiKeyHelper": "echo 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",
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
   "permissions": {
+    "defaultMode": "auto",
     "allow": [
-      "Bash(venv/bin/python -m pytest *)",
-      "Bash(venv/bin/python run.py)",
-      "Bash(venv/bin/python -m cli *)",
-      "Bash(venv/bin/pip install -r requirements.txt)",
-
-      "Bash(curl http://127.0.0.1:5000/*)",
-      "Bash(curl * http://127.0.0.1:5000/*)",
-
-      "Bash(kubectl get *)",
-      "Bash(kubectl describe *)",
-      "Bash(kubectl explain *)",
-      "Bash(kubectl events *)",
-      "Bash(kubectl logs *)",
-      "Bash(kubectl wait *)",
-      "Bash(kubectl rollout status *)",
-      "Bash(kubectl rollout history *)",
-      "Bash(kubectl api-resources *)",
-      "Bash(kubectl version *)",
-      "Bash(kubectl config current-context)",
-      "Bash(kubectl *--dry-run=server*)",
-      "Bash(kubectl *--dry-run=client*)",
-      "Bash(minikube status *)",
-
-      "Bash(git init *)",
-      "Bash(git status *)",
-      "Bash(git diff *)",
-      "Bash(git log *)",
-      "Bash(git show *)",
+      "Edit(**)",
+      "Read(**)",
+      "Bash(npm *)",
       "Bash(git add *)",
-      "Bash(git commit *)",
-      "Bash(git push *)",
-      "Bash(git branch *)",
-      "Bash(git remote *)",
-      "Bash(git rev-parse *)",
-      "Bash(git fetch *)",
-
-      "WebFetch(domain:kubernetes.io)",
-      "WebFetch(domain:github.com)",
-      "WebFetch(domain:raw.githubusercontent.com)"
+      "Bash(git status)"
     ],
-    "deny": [
+  "deny": [
       "Bash(minikube delete *)",
       "Bash(minikube stop *)",
       "Bash(git push *--force*)",

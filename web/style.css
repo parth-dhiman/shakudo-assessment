@@ -442,6 +442,74 @@ main {
 
 #delete-button { margin-left: auto; }
 
+/* ========== Logs ========== */
+
+.logs-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px 24px;
+  margin-bottom: 16px;
+}
+
+.logs-head .section-title { margin-bottom: 0; }
+
+.logs-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 24px;
+}
+
+.logs-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.logs-toggle input {
+  margin: 0;
+  accent-color: var(--ink);
+}
+
+.logs-status {
+  min-height: 20px;
+  margin-bottom: 12px;
+  color: var(--muted);
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+
+.logs-status.is-failing { color: var(--failing); }
+
+.logs {
+  height: 360px;
+  margin: 0;
+  padding: 16px 20px;
+  overflow: auto;
+  resize: vertical;
+  border: 1px solid var(--hairline);
+  background: var(--surface);
+  color: var(--ink);
+  font: 400 12.5px/1.6 var(--mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.logs:empty::before {
+  content: "No output yet";
+  color: var(--unknown);
+}
+
+.log-line {
+  display: block;
+  min-height: 1.6em;
+}
+
 /* ========== Modals ========== */
 
 .modal {

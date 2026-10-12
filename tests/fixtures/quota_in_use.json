@@ -1,0 +1,69 @@
+{
+    "apiVersion": "v1",
+    "items": [
+        {
+            "apiVersion": "v1",
+            "kind": "ResourceQuota",
+            "metadata": {
+                "creationTimestamp": "2026-10-12T16:23:44Z",
+                "labels": {
+                    "app.kubernetes.io/managed-by": "test-run"
+                },
+                "name": "deployment-quota",
+                "namespace": "test-d72a77",
+                "resourceVersion": "328709",
+                "uid": "2cf65133-593f-46f3-b147-cee8b7b64cd0"
+            },
+            "spec": {
+                "hard": {
+                    "requests.cpu": "1",
+                    "requests.memory": "2Gi"
+                }
+            },
+            "status": {
+                "hard": {
+                    "requests.cpu": "1",
+                    "requests.memory": "2Gi"
+                },
+                "used": {
+                    "requests.cpu": "300m",
+                    "requests.memory": "384Mi"
+                }
+            }
+        },
+        {
+            "apiVersion": "v1",
+            "kind": "ResourceQuota",
+            "metadata": {
+                "creationTimestamp": "2026-10-12T16:23:46Z",
+                "name": "extra",
+                "namespace": "test-d72a77",
+                "resourceVersion": "328731",
+                "uid": "81c66622-da9b-45de-95df-d48ade82459a"
+            },
+            "spec": {
+                "hard": {
+                    "cpu": "500m",
+                    "memory": "1Gi",
+                    "pods": "10"
+                }
+            },
+            "status": {
+                "hard": {
+                    "cpu": "500m",
+                    "memory": "1Gi",
+                    "pods": "10"
+                },
+                "used": {
+                    "cpu": "300m",
+                    "memory": "384Mi",
+                    "pods": "3"
+                }
+            }
+        }
+    ],
+    "kind": "List",
+    "metadata": {
+        "resourceVersion": ""
+    }
+}

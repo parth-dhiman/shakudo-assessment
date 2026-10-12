@@ -1,0 +1,245 @@
+{
+    "apiVersion": "v1",
+    "items": [
+        {
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "metadata": {
+                "annotations": {
+                    "deployment.kubernetes.io/revision": "3"
+                },
+                "creationTimestamp": "2026-10-11T21:06:29Z",
+                "generation": 3,
+                "labels": {
+                    "app.kubernetes.io/managed-by": "test-run",
+                    "app.kubernetes.io/name": "web"
+                },
+                "name": "web",
+                "namespace": "test-a64d5e",
+                "resourceVersion": "303377",
+                "uid": "2e95519a-db1a-4967-88c2-40d14fcdf74c"
+            },
+            "spec": {
+                "progressDeadlineSeconds": 600,
+                "replicas": 1,
+                "revisionHistoryLimit": 10,
+                "selector": {
+                    "matchLabels": {
+                        "app.kubernetes.io/managed-by": "test-run",
+                        "app.kubernetes.io/name": "web"
+                    }
+                },
+                "strategy": {
+                    "rollingUpdate": {
+                        "maxSurge": "25%",
+                        "maxUnavailable": "25%"
+                    },
+                    "type": "RollingUpdate"
+                },
+                "template": {
+                    "metadata": {
+                        "labels": {
+                            "app.kubernetes.io/managed-by": "test-run",
+                            "app.kubernetes.io/name": "web"
+                        }
+                    },
+                    "spec": {
+                        "containers": [
+                            {
+                                "image": "busybox",
+                                "imagePullPolicy": "Always",
+                                "name": "web",
+                                "resources": {},
+                                "terminationMessagePath": "/dev/termination-log",
+                                "terminationMessagePolicy": "File"
+                            }
+                        ],
+                        "dnsPolicy": "ClusterFirst",
+                        "restartPolicy": "Always",
+                        "schedulerName": "default-scheduler",
+                        "securityContext": {},
+                        "terminationGracePeriodSeconds": 30
+                    }
+                }
+            },
+            "status": {
+                "conditions": [
+                    {
+                        "lastTransitionTime": "2026-10-11T21:06:29Z",
+                        "lastUpdateTime": "2026-10-11T21:06:29Z",
+                        "message": "Deployment does not have minimum availability.",
+                        "reason": "MinimumReplicasUnavailable",
+                        "status": "False",
+                        "type": "Available"
+                    },
+                    {
+                        "lastTransitionTime": "2026-10-11T21:06:29Z",
+                        "lastUpdateTime": "2026-10-11T21:06:29Z",
+                        "message": "ReplicaSet \"web-68bdcf9b5c\" is progressing.",
+                        "reason": "ReplicaSetUpdated",
+                        "status": "True",
+                        "type": "Progressing"
+                    }
+                ],
+                "observedGeneration": 3,
+                "replicas": 2,
+                "terminatingReplicas": 0,
+                "unavailableReplicas": 2,
+                "updatedReplicas": 1
+            }
+        },
+        {
+            "apiVersion": "apps/v1",
+            "kind": "ReplicaSet",
+            "metadata": {
+                "annotations": {
+                    "deployment.kubernetes.io/desired-replicas": "1",
+                    "deployment.kubernetes.io/max-replicas": "2",
+                    "deployment.kubernetes.io/revision": "2"
+                },
+                "creationTimestamp": "2026-10-11T21:06:29Z",
+                "generation": 1,
+                "labels": {
+                    "app.kubernetes.io/managed-by": "test-run",
+                    "app.kubernetes.io/name": "web",
+                    "pod-template-hash": "68bdcf9b5c"
+                },
+                "name": "web-68bdcf9b5c",
+                "namespace": "test-a64d5e",
+                "ownerReferences": [
+                    {
+                        "apiVersion": "apps/v1",
+                        "blockOwnerDeletion": true,
+                        "controller": true,
+                        "kind": "Deployment",
+                        "name": "web",
+                        "uid": "2e95519a-db1a-4967-88c2-40d14fcdf74c"
+                    }
+                ],
+                "resourceVersion": "303371",
+                "uid": "e8ccb8df-9c32-42ba-b383-b8bbd584c2c7"
+            },
+            "spec": {
+                "replicas": 1,
+                "selector": {
+                    "matchLabels": {
+                        "app.kubernetes.io/managed-by": "test-run",
+                        "app.kubernetes.io/name": "web",
+                        "pod-template-hash": "68bdcf9b5c"
+                    }
+                },
+                "template": {
+                    "metadata": {
+                        "labels": {
+                            "app.kubernetes.io/managed-by": "test-run",
+                            "app.kubernetes.io/name": "web",
+                            "pod-template-hash": "68bdcf9b5c"
+                        }
+                    },
+                    "spec": {
+                        "containers": [
+                            {
+                                "image": "busybox:1.36",
+                                "imagePullPolicy": "Always",
+                                "name": "web",
+                                "resources": {},
+                                "terminationMessagePath": "/dev/termination-log",
+                                "terminationMessagePolicy": "File"
+                            }
+                        ],
+                        "dnsPolicy": "ClusterFirst",
+                        "restartPolicy": "Always",
+                        "schedulerName": "default-scheduler",
+                        "securityContext": {},
+                        "terminationGracePeriodSeconds": 30
+                    }
+                }
+            },
+            "status": {
+                "fullyLabeledReplicas": 1,
+                "observedGeneration": 1,
+                "replicas": 1,
+                "terminatingReplicas": 0
+            }
+        },
+        {
+            "apiVersion": "apps/v1",
+            "kind": "ReplicaSet",
+            "metadata": {
+                "annotations": {
+                    "deployment.kubernetes.io/desired-replicas": "1",
+                    "deployment.kubernetes.io/max-replicas": "2",
+                    "deployment.kubernetes.io/revision": "3",
+                    "deployment.kubernetes.io/revision-history": "1"
+                },
+                "creationTimestamp": "2026-10-11T21:06:29Z",
+                "generation": 1,
+                "labels": {
+                    "app.kubernetes.io/managed-by": "test-run",
+                    "app.kubernetes.io/name": "web",
+                    "pod-template-hash": "6c8dbf7667"
+                },
+                "name": "web-6c8dbf7667",
+                "namespace": "test-a64d5e",
+                "ownerReferences": [
+                    {
+                        "apiVersion": "apps/v1",
+                        "blockOwnerDeletion": true,
+                        "controller": true,
+                        "kind": "Deployment",
+                        "name": "web",
+                        "uid": "2e95519a-db1a-4967-88c2-40d14fcdf74c"
+                    }
+                ],
+                "resourceVersion": "303375",
+                "uid": "7cc63f20-034f-46da-a358-c3d327dd6019"
+            },
+            "spec": {
+                "replicas": 1,
+                "selector": {
+                    "matchLabels": {
+                        "app.kubernetes.io/managed-by": "test-run",
+                        "app.kubernetes.io/name": "web",
+                        "pod-template-hash": "6c8dbf7667"
+                    }
+                },
+                "template": {
+                    "metadata": {
+                        "labels": {
+                            "app.kubernetes.io/managed-by": "test-run",
+                            "app.kubernetes.io/name": "web",
+                            "pod-template-hash": "6c8dbf7667"
+                        }
+                    },
+                    "spec": {
+                        "containers": [
+                            {
+                                "image": "busybox",
+                                "imagePullPolicy": "Always",
+                                "name": "web",
+                                "resources": {},
+                                "terminationMessagePath": "/dev/termination-log",
+                                "terminationMessagePolicy": "File"
+                            }
+                        ],
+                        "dnsPolicy": "ClusterFirst",
+                        "restartPolicy": "Always",
+                        "schedulerName": "default-scheduler",
+                        "securityContext": {},
+                        "terminationGracePeriodSeconds": 30
+                    }
+                }
+            },
+            "status": {
+                "fullyLabeledReplicas": 1,
+                "observedGeneration": 1,
+                "replicas": 1,
+                "terminatingReplicas": 0
+            }
+        }
+    ],
+    "kind": "List",
+    "metadata": {
+        "resourceVersion": ""
+    }
+}

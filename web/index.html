@@ -132,6 +132,18 @@
           </div>
         </section>
 
+        <section class="section" aria-labelledby="logs-title">
+          <div class="logs-head">
+            <h2 class="section-title" id="logs-title">Logs</h2>
+            <div class="logs-controls">
+              <select class="select" id="logs-pod" aria-label="Pod"></select>
+              <label class="logs-toggle"><input type="checkbox" id="logs-previous"> Previous container</label>
+            </div>
+          </div>
+          <p class="logs-status" id="logs-status"></p>
+          <pre class="logs" id="logs-output" tabindex="0"></pre>
+        </section>
+
         <section class="section" aria-labelledby="conditions-title">
           <h2 class="section-title" id="conditions-title">Conditions</h2>
           <p class="muted" id="conditions-empty" hidden>No conditions yet</p>
@@ -174,6 +186,16 @@
           <label class="label" for="new-image">Image</label>
           <input class="input" id="new-image" type="text" placeholder="nginx:latest" required autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="new-image-error">
           <p class="field-error" id="new-image-error"></p>
+        </div>
+        <div class="field">
+          <label class="label" for="new-cpu">CPU request</label>
+          <input class="input" id="new-cpu" type="text" value="100m" placeholder="100m" required autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="new-cpu-error">
+          <p class="field-error" id="new-cpu-error"></p>
+        </div>
+        <div class="field">
+          <label class="label" for="new-memory">Memory request</label>
+          <input class="input" id="new-memory" type="text" value="128Mi" placeholder="128Mi" required autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="new-memory-error">
+          <p class="field-error" id="new-memory-error"></p>
         </div>
         <div class="field">
           <label class="label" for="new-replicas">Replicas</label>

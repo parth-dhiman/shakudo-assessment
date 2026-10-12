@@ -1,0 +1,13 @@
+# Quota for every namespace the API creates, applied as a ResourceQuota and checked before each create and scale-up.
+#
+# Only requests are limited: they are what the scheduler reserves on a node, so they decide whether pods fit.
+# Limits are a ceiling a container may burst to, not a reservation.
+#
+# Sized for `minikube start --cpus=4 --memory=8192`: system pods already request about 0.85 CPU and 220Mi,
+# leaving room for about three namespaces at their full quota.
+#
+# Values are Kubernetes quantities, quoted so YAML keeps them as strings: cpu "1" = 1 core, "500m" = half a core;
+# memory "2Gi" = 2 GiB. JSON works too (YAML reads it), e.g. {"requests": {"cpu": "1", "memory": "2Gi"}}.
+requests:
+  cpu: "1"
+  memory: "2Gi"

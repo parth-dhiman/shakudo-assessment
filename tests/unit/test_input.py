@@ -15,12 +15,23 @@ from app.schema.deployments import (
     Namespace,
     NamespaceAndUid,
     PatchSpec,
+    RollbackSpec,
 )
 
 _BASE_INPUT: Dict[str, Any] = {
-    "name":  "hello",
-    "image": "busybox",
+    "name":      "hello",
+    "image":     "busybox",
+    "resources": {"requests": {"cpu": "100m", "memory": "64Mi"}},
 }
+
+# The smallest valid requests: quantity tests start from these, so a limit is never below its request.
+_ZERO_REQUESTS: Dict[str, str] = {"cpu": "0", "memory": "0"}
+
+def _resources(section: str, values: Dict[str, Any]) -> Dict[str, Any]:
+    # resources with `values` under `section` ("requests" or "limits"), on top of the zero requests.
+    if (section == "requests"):
+        return {"requests": {**_ZERO_REQUESTS, **values}}
+    return {"requests": _ZERO_REQUESTS, section: values}
 
 def _input(**overrides):
     return {
@@ -61,20 +72,16 @@ def test_full_input():
 
 def test_name_is_required():
     with pytest.raises(ValidationError) as exc_info:
-        DeploymentSpec.model_validate({
-            "image" : "busybox",
-        })
+        DeploymentSpec.model_validate({key: value for (key, value) in _BASE_INPUT.items() if key != "name"})
     assert (_error_fields(exc_info) == {"name"})
 
 def test_image_is_required():
     with pytest.raises(ValidationError) as exc_info:
-        DeploymentSpec.model_validate({
-            "name" : "hello",
-        })
+        DeploymentSpec.model_validate({key: value for (key, value) in _BASE_INPUT.items() if key != "image"})
     assert (_error_fields(exc_info) == {"image"})
 
 @pytest.mark.parametrize("field", ["name", "namespace"])
-@pytest.mark.parametrize("value", ["a", "job-1", "123-abc", "a" * 63])
+@pytest.mark.parametrize("value", ["a", "job-1", "a" * 63])
 def test_valid_dns_labels(field: str, value: str):
     spec: DeploymentSpec = DeploymentSpec.model_validate(_input(**{
         field: value,
@@ -82,7 +89,7 @@ def test_valid_dns_labels(field: str, value: str):
     assert (getattr(spec, field) == value)
 
 @pytest.mark.parametrize("field", ["name", "namespace"])
-@pytest.mark.parametrize("value", ["Hello", "job_1", "-job", "job-", "job.1", "", "a" * 64, "jöb", " job", 123, None])
+@pytest.mark.parametrize("value", ["Hello", "123-abc", "job_1", "-job", "job-", "job.1", "", "a" * 64, "jöb", " job", 123, None])
 def test_invalid_dns_labels(field: str, value: str):
     with pytest.raises(ValidationError) as exc_info:
         DeploymentSpec.model_validate(_input(**{
@@ -119,11 +126,7 @@ def test_invalid_images(image: str):
 @pytest.mark.parametrize("value",    ["100m", "0.5", "1", "64Mi", "1Gi", "0", "2k", "1.5Gi", "1e3", "+1", ".5"])
 def test_valid_resources(section: str, resource: int, value: Any):
     spec: DeploymentSpec = DeploymentSpec.model_validate(_input(
-        resources = {
-            section: {
-                resource: value,
-            }
-        }
+        resources = _resources(section, {resource: value}),
     ))
     assert (getattr(getattr(spec.resources, section), resource) == value)
 
@@ -142,11 +145,7 @@ def test_valid_resources(section: str, resource: int, value: Any):
 def test_invalid_resources(section: str, resource: str, value: Any):
     with pytest.raises(ValidationError) as exc_info:
         DeploymentSpec.model_validate(_input(
-            resources = {
-                section: {
-                    resource: value,
-            }
-        }
+            resources = _resources(section, {resource: value}),
         ))
     assert (_error_fields(exc_info) == {f"resources.{section}.{resource}"})
 
@@ -168,7 +167,7 @@ def test_requests_under_limits(
     spec: DeploymentSpec = DeploymentSpec.model_validate(
         _input(
             resources={
-                "requests": {resource: requested},
+                "requests": {**_ZERO_REQUESTS, resource: requested},
                 "limits":   {resource: limit},
             }
         )
@@ -195,7 +194,7 @@ def test_requests_exceeds_limit(
         DeploymentSpec.model_validate(
             _input(
                 resources = {
-                    "requests": {resource: requested},
+                    "requests": {**_ZERO_REQUESTS, resource: requested},
                     "limits":   {resource: limit},
                 }
             )
@@ -280,8 +279,9 @@ def test_defaults():
     spec: DeploymentSpec = DeploymentSpec.model_validate(_input())
     assert (spec.namespace == "default")
     assert (spec.replicas  == 1)
-    for field in ("port", "command", "args", "env", "labels", "resources"):
+    for field in ("port", "command", "args", "env", "labels"):
         assert (getattr(spec, field) is None)
+    assert (spec.resources.limits is None)
 
 @pytest.mark.parametrize("field", [
     "foo",
@@ -394,24 +394,26 @@ def test_map_values_must_be_strings(field: str):
 @pytest.mark.parametrize(
     "resources",
     [
-        {},
-        {"requests": {}},
-        {"limits": {"cpu": "1"}},                # limits alone: requests default to limits
+        {"requests": {"cpu": "100m", "memory": "64Mi"}},
+        {"requests": {"cpu": "100m", "memory": "64Mi"}, "limits": {}},
+        {"requests": {"cpu": "100m", "memory": "64Mi"}, "limits": {"cpu": "1"}},   # limits stay optional, per resource
+        {"requests": {"cpu": "100m", "memory": "64Mi"}, "limits": None},
     ],
-    ids = ["empty", "empty-requests", "limits-only"],
+    ids = ["requests-only", "empty-limits", "one-limit", "limits-null"],
 )
 def test_valid_resources_shape(resources: Any):
     spec: DeploymentSpec = DeploymentSpec.model_validate(_input(
         resources = resources,
     ))
-    assert (spec.resources is not None)
+    assert (spec.resources.requests.cpu    == "100m")
+    assert (spec.resources.requests.memory == "64Mi")
 
 @pytest.mark.parametrize(
     ("resources", "field"),
     [
-        ({"requests": {"gpu": "1"}}, "resources.requests.gpu"),
-        ({"claims": []},             "resources.claims"),
-        ("100m",                     "resources"),
+        ({"requests": {"cpu": "100m", "memory": "64Mi", "gpu": "1"}}, "resources.requests.gpu"),
+        ({"requests": {"cpu": "100m", "memory": "64Mi"}, "claims": []}, "resources.claims"),
+        ("100m",                                                         "resources"),
     ],
     ids = ["unknown-resource", "unknown-section", "not-an-object"],
 )
@@ -420,6 +422,465 @@ def test_invalid_resources_shape(resources: Any, field: str):
         DeploymentSpec.model_validate(_input(
             resources = resources,
         ))
+    assert (_error_fields(exc_info) == {field})
+
+# Every namespace the API creates has a quota on CPU and memory requests, so both requests are always required.
+@pytest.mark.parametrize(
+    ("resources", "fields"),
+    [
+        (None,                                   {"resources"}),
+        ({},                                     {"resources.requests"}),
+        ({"limits": {"cpu": "1", "memory": "1Gi"}}, {"resources.requests"}),   # limits are not copied into requests
+        ({"requests": {}},                       {"resources.requests.cpu", "resources.requests.memory"}),
+        ({"requests": {"cpu": "100m"}},          {"resources.requests.memory"}),
+        ({"requests": {"memory": "64Mi"}},       {"resources.requests.cpu"}),
+        ({"requests": {"cpu": None, "memory": "64Mi"}}, {"resources.requests.cpu"}),
+    ],
+    ids = ["null", "empty", "limits-only", "empty-requests", "cpu-only", "memory-only", "cpu-null"],
+)
+def test_requests_are_required(resources: Any, fields: Set[str]):
+    with pytest.raises(ValidationError) as exc_info:
+        DeploymentSpec.model_validate(_input(
+            resources = resources,
+        ))
+    assert (_error_fields(exc_info) == fields)
+
+def test_resources_are_required():
+    body: Dict[str, Any] = {key: value for (key, value) in _BASE_INPUT.items() if key != "resources"}
+    with pytest.raises(ValidationError) as exc_info:
+        DeploymentSpec.model_validate(body)
+    assert (_error_fields(exc_info) == {"resources"})
+
+# ==================== DeploymentSpec: service ====================
+
+def test_service_is_optional():
+    spec: DeploymentSpec = DeploymentSpec.model_validate(_input())
+    assert (spec.service is None)
+
+def test_service_defaults():
+    spec: DeploymentSpec = DeploymentSpec.model_validate(_input(
+        service = {"port": 80},
+    ))
+    assert (spec.service.port == 80)
+    for field in ("type", "protocol", "target_port"):
+        assert (getattr(spec.service, field) is None)
+
+@pytest.mark.parametrize(
+    "service",
+    [
+        {"port": 80, "target_port": 8080, "type": "NodePort", "protocol": "UDP"},
+        {"port": 80, "target_port": None, "type": None,       "protocol": None},
+    ],
+    ids = ["all-fields", "explicit-nulls"],
+)
+def test_valid_services(service: Dict[str, Any]):
+    spec: DeploymentSpec = DeploymentSpec.model_validate(_input(
+        service = service,
+    ))
+    # Values come back unchanged: a validator that forgets to return would turn them into None.
+    assert (spec.service.model_dump() == service)
+
+@pytest.mark.parametrize("field", ["port", "target_port"])
+@pytest.mark.parametrize("value", [1, 80, 8080, 65535])
+def test_valid_service_ports(field: str, value: int):
+    spec: DeploymentSpec = DeploymentSpec.model_validate(_input(
+        service = {"port": 80, field: value},
+    ))
+    assert (getattr(spec.service, field) == value)
+
+@pytest.mark.parametrize("field", ["port", "target_port"])
+@pytest.mark.parametrize("value", [
+    0,
+    -1,
+    65536,
+    80.0,                    # strict: a float is not an integer
+    "80",                    # strict: no numeric strings
+    True,                    # strict: a boolean is not an integer
+])
+def test_invalid_service_ports(field: str, value: Any):
+    with pytest.raises(ValidationError) as exc_info:
+        DeploymentSpec.model_validate(_input(
+            service = {"port": 80, field: value},
+        ))
+    assert (_error_fields(exc_info) == {f"service.{field}"})
+
+@pytest.mark.parametrize(
+    "service",
+    [
+        {},
+        {"port": None},
+        {"target_port": 8080, "type": "NodePort"},
+    ],
+    ids = ["empty", "null", "other-fields-only"],
+)
+def test_service_port_is_required(service: Dict[str, Any]):
+    with pytest.raises(ValidationError) as exc_info:
+        DeploymentSpec.model_validate(_input(
+            service = service,
+        ))
+    assert (_error_fields(exc_info) == {"service.port"})
+
+@pytest.mark.parametrize("type", ["ClusterIP", "NodePort", None])
+def test_valid_service_types(type: Any):
+    spec: DeploymentSpec = DeploymentSpec.model_validate(_input(
+        service = {"port": 80, "type": type},
+    ))
+    assert (spec.service.type == type)
+
+@pytest.mark.parametrize("type", [
+    "LoadBalancer",          # a real Service type, but not one we support
+    "ExternalName",          # a real Service type, but not one we support
+    "clusterip",             # values are case-sensitive
+    "NODEPORT",
+    " ClusterIP",            # no trimming
+    "",
+    1,
+])
+def test_invalid_service_types(type: Any):
+    with pytest.raises(ValidationError) as exc_info:
+        DeploymentSpec.model_validate(_input(
+            service = {"port": 80, "type": type},
+        ))
+    assert (_error_fields(exc_info) == {"service.type"})
+
+@pytest.mark.parametrize("protocol", ["TCP", "UDP", "SCTP", None])
+def test_valid_service_protocols(protocol: Any):
+    spec: DeploymentSpec = DeploymentSpec.model_validate(_input(
+        service = {"port": 80, "protocol": protocol},
+    ))
+    assert (spec.service.protocol == protocol)
+
+@pytest.mark.parametrize("protocol", [
+    "tcp",                   # values are case-sensitive
+    "HTTP",                  # an application protocol, not a transport one
+    "TCP ",                  # no trimming
+    "",
+    6,                       # TCP's IP protocol number is not accepted
+])
+def test_invalid_service_protocols(protocol: Any):
+    with pytest.raises(ValidationError) as exc_info:
+        DeploymentSpec.model_validate(_input(
+            service = {"port": 80, "protocol": protocol},
+        ))
+    assert (_error_fields(exc_info) == {"service.protocol"})
+
+@pytest.mark.parametrize("field", [
+    "foo",
+    "targetPort",            # Kubernetes spelling, not ours
+    "nodePort",              # allocated by the API server
+    "name",                  # taken from the deployment
+    "selector",              # taken from the deployment
+])
+def test_service_unknown_fields(field: str):
+    with pytest.raises(ValidationError) as exc_info:
+        DeploymentSpec.model_validate(_input(
+            service = {"port": 80, field: 1},
+        ))
+    assert (_error_fields(exc_info) == {f"service.{field}"})
+
+@pytest.mark.parametrize(
+    "service",
+    [80, "80", True, [], [{"port": 80}]],
+    ids = ["int", "string", "bool", "empty-list", "list-of-objects"],
+)
+def test_service_must_be_an_object(service: Any):
+    with pytest.raises(ValidationError) as exc_info:
+        DeploymentSpec.model_validate(_input(
+            service = service,
+        ))
+    assert (_error_fields(exc_info) == {"service"})
+
+# ==================== DeploymentSpec: probes ====================
+
+# Both probe fields share ProbeSpec's rules; LivenessProbeSpec only narrows success_threshold.
+_PROBE_FIELDS: List[str] = ["readiness_probe", "liveness_probe"]
+_PROBE_TIMINGS: List[str] = [
+    "initial_delay_seconds",
+    "period_seconds",
+    "timeout_seconds",
+    "success_threshold",
+    "failure_threshold",
+]
+_PROBE: Dict[str, Any] = {"http_get": {"port": 80}}
+
+def _probe(**overrides):
+    return {
+        **_PROBE,
+        **overrides,
+    }
+
+def test_probes_are_optional():
+    spec: DeploymentSpec = DeploymentSpec.model_validate(_input())
+    assert (spec.readiness_probe is None)
+    assert (spec.liveness_probe  is None)
+
+@pytest.mark.parametrize("field", _PROBE_FIELDS)
+def test_probe_defaults(field: str):
+    spec: DeploymentSpec = DeploymentSpec.model_validate(_input(**{
+        field: _probe(),
+    }))
+    probe = getattr(spec, field)
+    assert (probe.http_get.port == 80)
+    for name in ("path", "scheme"):
+        assert (getattr(probe.http_get, name) is None)
+    for name in _PROBE_TIMINGS:
+        assert (getattr(probe, name) is None)
+
+@pytest.mark.parametrize("field", _PROBE_FIELDS)
+@pytest.mark.parametrize(
+    ("probe", "kubernetes"),
+    [
+        (
+            _PROBE,
+            {"httpGet": {"port": 80}},
+        ),
+        (
+            {
+                "http_get":              {"port": 8080, "path": "/healthz/live", "scheme": "HTTPS"},
+                "initial_delay_seconds": 15,
+                "period_seconds":        10,
+                "timeout_seconds":       2,
+                "success_threshold":     1,
+                "failure_threshold":     3,
+            },
+            {
+                "httpGet":             {"port": 8080, "path": "/healthz/live", "scheme": "HTTPS"},
+                "initialDelaySeconds": 15,
+                "periodSeconds":       10,
+                "timeoutSeconds":      2,
+                "successThreshold":    1,
+                "failureThreshold":    3,
+            },
+        ),
+        (
+            {"http_get": {"port": 80, "path": None, "scheme": None}, **{name: None for name in _PROBE_TIMINGS}},
+            {"httpGet": {"port": 80}},
+        ),
+    ],
+    ids = ["minimal", "all-fields", "explicit-nulls"],
+)
+def test_valid_probes(field: str, probe: Dict[str, Any], kubernetes: Dict[str, Any]):
+    spec: DeploymentSpec = DeploymentSpec.model_validate(_input(**{
+        field: probe,
+    }))
+    # Values come back unchanged.
+    assert (getattr(spec, field).model_dump(exclude_unset=True) == probe)
+    # What _build_deployment puts on the container: camelCase keys, unset fields left to the API server's defaults.
+    assert (getattr(spec, field).model_dump(exclude_none=True, by_alias=True) == kubernetes)
+
+def test_both_probes_together():
+    spec: DeploymentSpec = DeploymentSpec.model_validate(_input(
+        readiness_probe = _probe(success_threshold=2),
+        liveness_probe  = _probe(success_threshold=1),
+    ))
+    assert (spec.readiness_probe.success_threshold == 2)
+    assert (spec.liveness_probe.success_threshold  == 1)
+
+@pytest.mark.parametrize("field", _PROBE_FIELDS)
+@pytest.mark.parametrize(
+    "probe",
+    [{}, {"http_get": None}, {"period_seconds": 10}],
+    ids = ["empty", "null", "timings-only"],
+)
+def test_probe_http_get_is_required(field: str, probe: Dict[str, Any]):
+    with pytest.raises(ValidationError) as exc_info:
+        DeploymentSpec.model_validate(_input(**{
+            field: probe,
+        }))
+    assert (_error_fields(exc_info) == {f"{field}.http_get"})
+
+# -------------------- probes: http_get --------------------
+
+@pytest.mark.parametrize("field", _PROBE_FIELDS)
+@pytest.mark.parametrize("port", [1, 80, 8080, 65535])
+def test_valid_probe_ports(field: str, port: int):
+    spec: DeploymentSpec = DeploymentSpec.model_validate(_input(**{
+        field: _probe(http_get={"port": port}),
+    }))
+    assert (getattr(spec, field).http_get.port == port)
+
+@pytest.mark.parametrize("field", _PROBE_FIELDS)
+@pytest.mark.parametrize("port", [
+    0,
+    -1,
+    65536,
+    80.0,                    # strict: a float is not an integer
+    "80",                    # strict: no numeric strings
+    "http",                  # named container ports are not supported
+    True,                    # strict: a boolean is not an integer
+    None,
+])
+def test_invalid_probe_ports(field: str, port: Any):
+    with pytest.raises(ValidationError) as exc_info:
+        DeploymentSpec.model_validate(_input(**{
+            field: _probe(http_get={"port": port}),
+        }))
+    assert (_error_fields(exc_info) == {f"{field}.http_get.port"})
+
+@pytest.mark.parametrize("field", _PROBE_FIELDS)
+def test_probe_port_is_required(field: str):
+    with pytest.raises(ValidationError) as exc_info:
+        DeploymentSpec.model_validate(_input(**{
+            field: _probe(http_get={"path": "/healthz"}),
+        }))
+    assert (_error_fields(exc_info) == {f"{field}.http_get.port"})
+
+@pytest.mark.parametrize("field", _PROBE_FIELDS)
+@pytest.mark.parametrize("path", ["/", "/healthz/live", "/status?verbose=1", None])
+def test_valid_probe_paths(field: str, path: Any):
+    spec: DeploymentSpec = DeploymentSpec.model_validate(_input(**{
+        field: _probe(http_get={"port": 80, "path": path}),
+    }))
+    assert (getattr(spec, field).http_get.path == path)
+
+@pytest.mark.parametrize("field", _PROBE_FIELDS)
+@pytest.mark.parametrize("path", [80, True, ["/healthz"]])
+def test_invalid_probe_paths(field: str, path: Any):
+    with pytest.raises(ValidationError) as exc_info:
+        DeploymentSpec.model_validate(_input(**{
+            field: _probe(http_get={"port": 80, "path": path}),
+        }))
+    assert (_error_fields(exc_info) == {f"{field}.http_get.path"})
+
+@pytest.mark.parametrize("field", _PROBE_FIELDS)
+@pytest.mark.parametrize("scheme", ["HTTP", "HTTPS", None])
+def test_valid_probe_schemes(field: str, scheme: Any):
+    spec: DeploymentSpec = DeploymentSpec.model_validate(_input(**{
+        field: _probe(http_get={"port": 80, "scheme": scheme}),
+    }))
+    assert (getattr(spec, field).http_get.scheme == scheme)
+
+@pytest.mark.parametrize("field", _PROBE_FIELDS)
+@pytest.mark.parametrize("scheme", [
+    "http",                  # values are case-sensitive
+    "https",
+    "TCP",                   # a transport protocol, not an HTTP scheme
+    "HTTP ",                 # no trimming
+    "",
+    1,
+])
+def test_invalid_probe_schemes(field: str, scheme: Any):
+    with pytest.raises(ValidationError) as exc_info:
+        DeploymentSpec.model_validate(_input(**{
+            field: _probe(http_get={"port": 80, "scheme": scheme}),
+        }))
+    assert (_error_fields(exc_info) == {f"{field}.http_get.scheme"})
+
+@pytest.mark.parametrize("field", _PROBE_FIELDS)
+@pytest.mark.parametrize("unknown", [
+    "foo",
+    "Port",                  # field names are case-sensitive
+    "host",                  # not supported
+    "http_headers",          # not supported
+    "httpHeaders",           # Kubernetes spelling, not ours
+])
+def test_probe_http_get_unknown_fields(field: str, unknown: str):
+    with pytest.raises(ValidationError) as exc_info:
+        DeploymentSpec.model_validate(_input(**{
+            field: _probe(http_get={"port": 80, unknown: 1}),
+        }))
+    assert (_error_fields(exc_info) == {f"{field}.http_get.{unknown}"})
+
+# -------------------- probes: timings and thresholds --------------------
+
+@pytest.mark.parametrize("field", _PROBE_FIELDS)
+@pytest.mark.parametrize(("timing", "value"), [
+    ("initial_delay_seconds", 0),
+    ("initial_delay_seconds", 15),
+    ("initial_delay_seconds", 2_147_483_647),
+    ("period_seconds",        1),
+    ("period_seconds",        2_147_483_647),
+    ("timeout_seconds",       1),
+    ("timeout_seconds",       2_147_483_647),
+    ("success_threshold",     1),
+    ("failure_threshold",     1),
+    ("failure_threshold",     2_147_483_647),
+])
+def test_valid_probe_timings(field: str, timing: str, value: int):
+    spec: DeploymentSpec = DeploymentSpec.model_validate(_input(**{
+        field: _probe(**{timing: value}),
+    }))
+    assert (getattr(getattr(spec, field), timing) == value)
+
+@pytest.mark.parametrize("field",  _PROBE_FIELDS)
+@pytest.mark.parametrize("timing", _PROBE_TIMINGS)
+@pytest.mark.parametrize("value",  [
+    -1,
+    2_147_483_648,           # these are int32 fields
+    10.0,                    # strict: a float is not an integer
+    "10",                    # strict: no numeric strings
+    True,                    # strict: a boolean is not an integer
+])
+def test_invalid_probe_timings(field: str, timing: str, value: Any):
+    with pytest.raises(ValidationError) as exc_info:
+        DeploymentSpec.model_validate(_input(**{
+            field: _probe(**{timing: value}),
+        }))
+    assert (_error_fields(exc_info) == {f"{field}.{timing}"})
+
+# initial_delay_seconds may be 0; every other timing must be at least 1 (kubectl explain pod.spec.containers.livenessProbe).
+@pytest.mark.parametrize("field",  _PROBE_FIELDS)
+@pytest.mark.parametrize("timing", ["period_seconds", "timeout_seconds", "success_threshold", "failure_threshold"])
+def test_probe_timings_below_one(field: str, timing: str):
+    with pytest.raises(ValidationError) as exc_info:
+        DeploymentSpec.model_validate(_input(**{
+            field: _probe(**{timing: 0}),
+        }))
+    assert (_error_fields(exc_info) == {f"{field}.{timing}"})
+
+@pytest.mark.parametrize("value", [1, 2, 2_147_483_647, None])
+def test_valid_readiness_success_thresholds(value: Any):
+    spec: DeploymentSpec = DeploymentSpec.model_validate(_input(
+        readiness_probe = _probe(success_threshold=value),
+    ))
+    assert (spec.readiness_probe.success_threshold == value)
+
+@pytest.mark.parametrize("value", [1, None])
+def test_valid_liveness_success_thresholds(value: Any):
+    spec: DeploymentSpec = DeploymentSpec.model_validate(_input(
+        liveness_probe = _probe(success_threshold=value),
+    ))
+    assert (spec.liveness_probe.success_threshold == value)
+
+# successThreshold "Must be 1 for liveness and startup" (kubectl explain pod.spec.containers.livenessProbe.successThreshold).
+@pytest.mark.parametrize("value", [2, 3, 2_147_483_647])
+def test_liveness_success_threshold_must_be_one(value: int):
+    with pytest.raises(ValidationError) as exc_info:
+        DeploymentSpec.model_validate(_input(
+            liveness_probe = _probe(success_threshold=value),
+        ))
+    assert (_error_fields(exc_info) == {"liveness_probe.success_threshold"})
+
+# -------------------- probes: shape --------------------
+
+@pytest.mark.parametrize("field", _PROBE_FIELDS)
+@pytest.mark.parametrize("unknown", [
+    "foo",
+    "httpGet",                           # Kubernetes spelling, not ours
+    "initialDelaySeconds",               # Kubernetes spelling, not ours
+    "tcp_socket",                        # only HTTP probes are supported
+    "exec",                              # only HTTP probes are supported
+    "grpc",                              # only HTTP probes are supported
+    "termination_grace_period_seconds",  # not supported
+])
+def test_probe_unknown_fields(field: str, unknown: str):
+    with pytest.raises(ValidationError) as exc_info:
+        DeploymentSpec.model_validate(_input(**{
+            field: _probe(**{unknown: 1}),
+        }))
+    assert (_error_fields(exc_info) == {f"{field}.{unknown}"})
+
+@pytest.mark.parametrize("field", _PROBE_FIELDS)
+@pytest.mark.parametrize(
+    "probe",
+    [80, "/healthz", True, [], [_PROBE]],
+    ids = ["int", "string", "bool", "empty-list", "list-of-objects"],
+)
+def test_probe_must_be_an_object(field: str, probe: Any):
+    with pytest.raises(ValidationError) as exc_info:
+        DeploymentSpec.model_validate(_input(**{
+            field: probe,
+        }))
     assert (_error_fields(exc_info) == {field})
 
 # ==================== NamespaceAndUid ====================
@@ -563,4 +1024,62 @@ def test_patch_unknown_fields(field: str):
 def test_patch_body_must_be_an_object(body: Any):
     with pytest.raises(ValidationError) as exc_info:
         PatchSpec.model_validate(body)
+    assert (_error_fields(exc_info) == {""})
+
+# ==================== RollbackSpec ====================
+
+@pytest.mark.parametrize(
+    "body",
+    [{}, {"revision": None}],
+    ids = ["empty", "revision-null"],
+)
+def test_rollback_revision_is_optional(body: Dict[str, Any]):
+    # No revision means the previous one (like `kubectl rollout undo`).
+    assert (RollbackSpec.model_validate(body).revision is None)
+
+@pytest.mark.parametrize("revision", [
+    1,
+    2,
+    10,
+    9_223_372_036_854_775_807,   # no upper limit: the controller's revisions are int64, a missing one is a 400 later
+])
+def test_valid_rollback_revisions(revision: int):
+    assert (RollbackSpec.model_validate({"revision": revision}).revision == revision)
+
+@pytest.mark.parametrize("revision", [
+    0,                       # kubectl's --to-revision=0 means "previous"; here that is an omitted revision
+    -1,
+    2.0,                     # strict: a float is not an integer
+    "2",                     # strict: no numeric strings
+    True,                    # strict: a boolean is not an integer
+    [2],
+])
+def test_invalid_rollback_revisions(revision: Any):
+    with pytest.raises(ValidationError) as exc_info:
+        RollbackSpec.model_validate({
+            "revision": revision,
+        })
+    assert (_error_fields(exc_info) == {"revision"})
+
+@pytest.mark.parametrize("field", [
+    "to_revision",           # kubectl's flag name, not ours
+    "toRevision",
+    "Revision",              # field names are case-sensitive
+    "uid",                   # in the URL, not the body
+    "namespace",             # in the query string, not the body
+    "image",
+])
+def test_rollback_unknown_fields(field: str):
+    with pytest.raises(ValidationError) as exc_info:
+        RollbackSpec.model_validate({
+            "revision": 1,
+            field:      "x",
+        })
+    assert (_error_fields(exc_info) == {field})
+
+# The route turns an empty body into {}, so None here stands for a body that is present but not valid JSON.
+@pytest.mark.parametrize("body", [None, [], "revision=2", 2])
+def test_rollback_body_must_be_an_object(body: Any):
+    with pytest.raises(ValidationError) as exc_info:
+        RollbackSpec.model_validate(body)
     assert (_error_fields(exc_info) == {""})

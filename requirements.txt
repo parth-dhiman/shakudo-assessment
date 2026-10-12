@@ -1,6 +1,7 @@
 Flask
 kubernetes
 pydantic
+PyYAML
 Werkzeug
 pytest
 requests

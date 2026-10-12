@@ -9,8 +9,6 @@ from decimal import Decimal
 
 # Third-party imports.
 from pydantic import (
-    BaseModel,
-    ConfigDict,
     Field,
     field_validator,
     model_validator,
@@ -23,6 +21,13 @@ from app.schema.common import (
     validate_dns_label,
     validate_image,
     validate_uid,
+    ForbidExtraFields,
+    MAX_INT32,
+)
+from app.schema.services import ServiceSpec
+from app.schema.probe import (
+    ProbeSpec,
+    LivenessProbeSpec,
 )
 
 # ==================== Script-Level Constants ====================
@@ -32,9 +37,6 @@ _RESERVED_LABELS = (
     MANAGED_BY_LABEL,
 )
 
-# spec.replicas is an int32; larger values are rejected (POST) or wrap around (PATCH) on the API server.
-_MAX_INT32 = 2_147_483_647
-
 # Quantity grammar with ASCII digits only (https://kubernetes.io/docs/reference/kubernetes-api/common-definitions/quantity/).
 _QUANTITY_NUMBER = r"(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)"
 _QUANTITY_RE = re.compile(
@@ -43,11 +45,6 @@ _QUANTITY_RE = re.compile(
 )
 
 # ==================== Schema ====================
-
-class ForbidExtraFields(BaseModel):
-    model_config: ConfigDict = ConfigDict(
-        extra = "forbid",
-    ) 
 
 class ResourceObject(ForbidExtraFields):
     cpu:    str | None = None
@@ -80,8 +77,15 @@ class ResourceObject(ForbidExtraFields):
         # If we did not get halted by any of these conditionals, just return value as is.
         return v
 
+class RequestsObject(ResourceObject):
+    # Both required: every namespace the API creates has a quota on CPU and memory requests, and Kubernetes then
+    # refuses pods that leave either out. Explicit requests also mean limits are never copied into requests.
+    # https://kubernetes.io/docs/concepts/policy/resource-quotas/
+    cpu:    str
+    memory: str
+
 class Resources(ForbidExtraFields):
-    requests: ResourceObject | None = None
+    requests: RequestsObject
     limits:   ResourceObject | None = None
 
     @model_validator(mode="after")
@@ -104,13 +108,14 @@ class Resources(ForbidExtraFields):
 class DeploymentSpec(ForbidExtraFields):
 
     # Required.
-    name:  str
-    image: str
+    name:      str
+    image:     str
+    resources: Resources
 
     # Optional, but need default.
     namespace: str = "default"
     # strict: reject booleans and numeric strings instead of coercing them.
-    replicas:  int = Field(default=1, ge=0, le=_MAX_INT32, strict=True)
+    replicas:  int = Field(default=1, ge=0, le=MAX_INT32, strict=True)
 
     # Optional, no defaults needed.
     # containerPort must be 0 < x < 65536 (kubectl explain deployment.spec.template.spec.containers.ports.containerPort).
@@ -119,7 +124,10 @@ class DeploymentSpec(ForbidExtraFields):
     args:      List[str] | None = None
     env:       Dict[str, str] | None = None
     labels:    Dict[str, str] | None = None
-    resources: Resources | None = None
+    service:   ServiceSpec | None = None
+
+    readiness_probe: ProbeSpec | None = None
+    liveness_probe:  LivenessProbeSpec | None = None
 
     @field_validator("name", "namespace")
     @classmethod
@@ -181,7 +189,7 @@ class PatchSpec(ForbidExtraFields):
     """
 
     # Both optional, but at least one is required.
-    replicas: int | None = Field(default=None, ge=0, le=_MAX_INT32, strict=True)
+    replicas: int | None = Field(default=None, ge=0, le=MAX_INT32, strict=True)
     image:    str | None = None
 
     @field_validator("image")
@@ -196,3 +204,10 @@ class PatchSpec(ForbidExtraFields):
         if (self.replicas is None) and (self.image is None):
             raise ValueError("Provide at least one of: replicas, image.")
         return self
+
+class RollbackSpec(ForbidExtraFields):
+
+    # Optional: when omitted, roll back to the previous revision (like `kubectl rollout undo`).
+    # Revisions are the deployment.kubernetes.io/revision numbers on the owned ReplicaSets, starting at 1.
+    revision: int | None = Field(default=None, ge=1, strict=True)
+    

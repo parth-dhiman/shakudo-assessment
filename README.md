@@ -1,52 +1,79 @@
-## Demo script
+# Shakudo Assessment: Kubernetes Workload Deployment & Monitoring Platform
 
-Walks through every endpoint, one step at a time.
+A service that manages and monitors workload deployments on your local Kubernetes cluster: a REST API, a web UI and two demo scripts, all running against a real minikube cluster.
+
+## Available Endpoints
+
+| Method | Endpoint | Description |
+| ------ | -------- | ----------- |
+| POST   | `/api/deployments` | Create a new Deployment in the cluster. Accepts JSON body with workload spec. Returns the created deployment with its UID and initial status. |
+| GET    | `/api/deployments` | List all managed deployments. Support filtering by namespace via query parameter. Return current status from the cluster, not cached data. |
+| GET    | `/api/deployments/:id` | Get detailed status for a single deployment including: replica counts (desired, ready, available, unavailable), pod-level status for each pod (name, phase, restart count, container statuses), conditions array from the Deployment status. |
+| PATCH  | `/api/deployments/:id` | Update a deployment. Must support at minimum: scaling replica count, updating the container image (triggering a rolling update). |
+| POST   | `/api/deployments/:id/restart` | Trigger a rollout restart (equivalent to kubectl rollout restart). This should patch the pod template annotation to force new pods. |
+| GET    | `/api/deployments/:id/history` | *(Stretch goal)* Deployment history: track rollout history. |
+| POST   | `/api/deployments/:id/rollback` | *(Stretch goal)* Support rollback to a previous revision (using the Kubernetes rollout API). |
+| DELETE | `/api/deployments/:id` | Delete the deployment and its associated resources from the cluster. Should handle cascade deletion of owned ReplicaSets and Pods. |
+| GET    | `/api/deployments/:id/logs?pod=<name>` | *(Stretch goal)* Log streaming: real-time log tailing from running pods. |
+
+`:id` is the deployment's Kubernetes UID, returned by the POST. Every `:id` endpoint also accepts an optional `?namespace=<namespace>` to narrow the lookup.
+
+## Running the Demo
+
+### Prerequisites
+
+- Python 3.11 or newer
+- Git
+- [minikube](https://minikube.sigs.k8s.io/docs/start/), started with `minikube start`. The quota in `quota.yaml` is sized for `minikube start --cpus=4 --memory=8192`.
+- `kubectl`, pointing at the minikube cluster (`minikube start` sets this up). The API connects through your kubeconfig, and the demo scripts also use `kubectl` to clean up after themselves.
+
+### 1. Set up
+
+Clone the repository and install the dependencies in a virtual environment:
 
 ```bash
-venv/bin/python run.py              # terminal 1: start the API
-venv/bin/python -m scripts.demo     # terminal 2: press Enter between steps
+git clone https://github.com/parth-dhiman/shakudo-assessment
+cd shakudo-assessment
+
+python3 -m venv venv               # Windows: python -m venv venv
+source venv/bin/activate           # Windows (PowerShell): venv\Scripts\Activate.ps1
+
+pip install -r requirements.txt
 ```
 
-Each step prints the API response and a `kubectl` command to check the cluster agrees.
+### 2. Start the API
 
-| Step | API shows | kubectl shows |
-|---|---|---|
-| Create `web` (3 × `nginx:latest`) in `demo` | 201, `"status": "UNKNOWN"` | `kubectl get deployment web -n demo`: 3/3 after a few seconds |
-| List, then list `demo` | `web` in `items` | `kubectl get deployments -n demo` |
-| Get | `"status": "HEALTHY"`, 3 pods | `kubectl get deployment,replicaset,pod -n demo -l app.kubernetes.io/name=web` |
-| Scale to 5 | `"desired": 5` | `kubectl get deployment web -n demo`: 5/5 |
-| Restart | 201 | `kubectl rollout history deployment/web -n demo`: one more revision |
-| Image → `nginx:nonexistent` | 200 | `kubectl get pods -n demo`: new pods in `ErrImagePull` / `ImagePullBackOff`, 4 old pods still `Running` |
-| Get again | `"status": "FAILING"` | `kubectl get deployment web -n demo`: 4/5 |
-| Delete | 204 | the same `get deployment,replicaset,pod` command: nothing left |
+```bash
+python run.py
+```
 
-Right after a create, PATCH or restart, the response says `UNKNOWN`, because Kubernetes hasn't caught up yet. Get again a second later.
+The API and the web UI listen on http://127.0.0.1:5000. Leave this terminal running.
 
-To try other values, edit the payloads at the top of `scripts/demo.py`. To clean up: `kubectl delete namespace demo`.
+### 3. Run the demo scripts
 
-## Web UI
+In a second terminal, go to the `shakudo-assessment` directory again, activate the virtual environment, and run either script:
 
-Start the API with `venv/bin/python run.py` and open http://127.0.0.1:5000. The page (`web/index.html`, `web/app.js`, `web/style.css`; plain HTML, CSS and JS with no build step) talks only to the API.
+```bash
+# Every endpoint, including the stretch goals.
+python -m scripts.demo
 
-- **Dashboard**: every managed deployment across namespaces with its health, ready/desired and available counts, age and last update, plus a namespace filter (`#/?namespace=<ns>`).
-- **Detail** (click a row, `#/d/<uid>`): replica counts, a pod table (phase, readiness, restarts, node, per-container state with waiting reasons such as `ImagePullBackOff`) and the Deployment's conditions.
-- **Actions**: scale, update the image, restart, delete (confirmed by typing the name), and a "New deployment" form.
-- The current view refreshes every 5 s without a page reload, pauses while the tab is hidden and shows "Connection lost — retrying" when the API is unreachable.
+# Failure modes: the API's error responses, and how its health status reports deployments that break.
+python -m scripts.failure
+```
 
-## Assumptions & decisions
+Each script explains every step and waits for you to press ENTER before sending a request. When it ends, it deletes everything it created, even if you stop it with Ctrl+C.
 
-- `:id` is the Deployment's `metadata.uid`, which is unique across the cluster, so `?namespace=` is optional on the `:id` routes and only narrows the search (a UID in another namespace gives 404). Field selectors don't support `metadata.uid`, so lookup lists the managed Deployments and matches the UID.
-- `replicas` and `port` must be JSON integers (no booleans or numeric strings); `replicas` is capped at 2147483647 because `spec.replicas` is an int32.
-- Resource quantities must match the documented Quantity grammar (ASCII digits; suffixes `Ki…Ei`, `m k M G T P E`, or an exponent) and be non-negative. This is stricter than the API server, which also trims whitespace and accepts `n`/`u`; those get a 400 rather than reaching the cluster.
-- DELETE uses `propagationPolicy: Background`, the Kubernetes default: the Deployment disappears at once and the garbage collector removes its ReplicaSets and Pods. A UID precondition makes sure the resolved object is the one deleted.
-- Health is decided in this order, first match wins:
-  1. UNKNOWN: the controller has not yet observed the latest spec (`observedGeneration < generation`).
-  2. FAILING: `ProgressDeadlineExceeded`, an unschedulable pod, or a container waiting in CrashLoopBackOff, ImagePullBackOff or ErrImagePull. A bad image rollout is FAILING even while old pods still serve.
-  3. PROGRESSING: the rollout is not complete (Progressing reason is not `NewReplicaSetAvailable`, or old or not-yet-updated pods remain).
-  4. FAILING: no replicas ready.
-  5. DEGRADED: some but not all replicas ready.
-  6. HEALTHY: all replicas ready, including 0 desired.
-- Web UI health colours: HEALTHY green, PROGRESSING and DEGRADED amber, FAILING red, UNKNOWN grey (the controller hasn't reported yet, so it is neither good nor bad). Status is always a dot plus the word, never colour alone.
-- The web UI's namespace selector lists the namespaces seen in unfiltered deployment lists during the session (plus the selected one), not every namespace in the cluster: the API has no namespace endpoint, and only namespaces with managed deployments are worth filtering on.
-- Deleting from the web UI asks you to type the deployment's name; the Delete button stays disabled until it matches exactly.
-- Beyond TASK.md's scale, restart and delete, the web UI also has an image-update control and a small create form (name, namespace, image, replicas), so the bad-image scenario can be demoed end to end from the browser.
+## Using the UI
+
+With `python run.py` running (step 2 above), open http://127.0.0.1:5000/ in your browser:
+
+- The dashboard lists every deployment across namespaces, colour-coded by health (green, yellow, red), with a namespace filter. It refreshes every 5 seconds.
+- Click a deployment for its detail view: replica counts, a pod table, the deployment's conditions, and a Logs panel that streams the selected pod's log live.
+- From the detail view you can scale, change the image, restart, or delete (with confirmation). Create new deployments with the "New deployment" button.
+
+## Running the Tests
+
+```bash
+python -m pytest tests/unit -q          # no cluster needed
+python -m pytest tests/integration -q   # needs minikube running
+```

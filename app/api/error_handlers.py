@@ -18,7 +18,11 @@ from pydantic import ValidationError
 from kubernetes.client.exceptions import ApiException
 from urllib3.exceptions import HTTPError
 from werkzeug.exceptions import HTTPException
-from app.exceptions import NotFoundError
+from app.exceptions import (
+    NotFoundError,
+    QuotaExceededError,
+    RevisionNotFoundError,
+)
 
 logger = logging.getLogger(__name__)
     
@@ -112,6 +116,25 @@ def _handle_not_found_e(e: NotFoundError) -> Tuple[Response, int]:
         message = str(e),
     )
 
+def _handle_revision_not_found_e(e: RevisionNotFoundError) -> Tuple[Response, int]:
+    # The deployment exists, so the request (its revision) is what's wrong: 400, not 404.
+    logger.warning("Revision not found error, %s", str(e))
+    return _error(
+        status  = 400,
+        code    = "REVISION_NOT_FOUND",
+        message = str(e),
+    )
+
+def _handle_quota_exceeded_e(e: QuotaExceededError) -> Tuple[Response, int]:
+    # 403, as Kubernetes answers a pod that would exceed a quota.
+    # https://kubernetes.io/docs/concepts/policy/resource-quotas/
+    logger.warning("Quota exceeded, %s", str(e))
+    return _error(
+        status  = 403,
+        code    = "QUOTA_EXCEEDED",
+        message = str(e),
+    )
+
 def _handle_unexpected_e(e: Exception) -> Tuple[Response, int]:
     logger.exception("Unhandled Error: %s", str(e))
     return _error(
@@ -135,5 +158,7 @@ def register_error_handlers(app: Flask) -> None:
     app.register_error_handler(ApiException,    _handle_k8s_api_e)
     app.register_error_handler(HTTPError,       _handle_k8s_unreachable_e)
     app.register_error_handler(NotFoundError,   _handle_not_found_e)
+    app.register_error_handler(RevisionNotFoundError, _handle_revision_not_found_e)
+    app.register_error_handler(QuotaExceededError,    _handle_quota_exceeded_e)
     app.register_error_handler(Exception,       _handle_unexpected_e)
     app.register_error_handler(HTTPException,   _handle_flask_e)
