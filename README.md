@@ -77,3 +77,34 @@ With `python run.py` running (step 2 above), open http://127.0.0.1:5000/ in your
 python -m pytest tests/unit -q          # no cluster needed
 python -m pytest tests/integration -q   # needs minikube running
 ```
+
+## Points I'd Like to Mention
+
+- **`lastUpdated` in the response to a PATCH (or restart) still shows the previous update time.** The API takes a deployment's last update time from the newest `lastUpdateTime` among its conditions, and those conditions are written by Kubernetes' deployment controller a moment *after* a change. The PATCH response is built from the object that `patch_namespaced_deployment` returns straight away, so its conditions, and therefore `lastUpdated`, still describe the state before the change. A GET a few seconds later shows the new time. This could be fixed by taking the time from `metadata.managedFields[].time`, which the API server updates on every write (including our own PATCH), or by waiting for the controller to process the change (`status.observedGeneration` catching up with `metadata.generation`) before responding, as the rollback endpoint already does.
+
+- **Timestamps in the demo video may be varied.** The video was not recorded in one go: it combines parts of several runs, so the pod, container and deployment timestamps in the responses shown can jump between clips.
+
+- **FAILING covers more than CrashLoopBackOff.** The document defines FAILING as "no replicas ready or CrashLoopBackOff detected". The API also reports FAILING when a pod cannot pull its image (`ErrImagePull` / `ImagePullBackOff`), when a pod cannot be scheduled (`Unschedulable`), and when a rollout misses its progress deadline (`ProgressDeadlineExceeded`). These count even while older pods are still serving: during a bad-image rollout the deployment is FAILING with 3/3 ready, whereas Kubernetes itself keeps calling that rollout "progressing" until its 10-minute progress deadline. The full rules, checked in this order (the first match wins):
+
+  | Status | When |
+  | ------ | ---- |
+  | UNKNOWN | Kubernetes has not processed the latest change yet (`status.observedGeneration` < `metadata.generation`). |
+  | FAILING | The rollout missed its progress deadline, or a pod cannot be scheduled, cannot pull its image, or is in CrashLoopBackOff. |
+  | PROGRESSING | A rollout is under way: Kubernetes has not marked it complete, not every pod runs the new template yet, or old pods are still around. |
+  | FAILING | Replicas are wanted, but none of them is ready. |
+  | DEGRADED | Some, but not all, replicas are ready. |
+  | HEALTHY | Every replica is ready (also when 0 replicas are wanted). |
+
+- **An unreachable Kubernetes API returns 503, not 500.** The API returns 503 `K8S_UNREACHABLE` when the API server cannot be reached, since the service it depends on is unavailable. Other failed Kubernetes calls return 500 `KUBERNETES_ERROR`, except Kubernetes' own 404, 409 and 422 answers, which become 404, 409 and 400.
+
+- **"Insufficient resources" shows up in two ways.** A request that would exceed a namespace's quota is refused by the API itself with 403 `QUOTA_EXCEEDED`, the same status Kubernetes uses for quota violations. In a namespace without a quota, Kubernetes accepts an oversized deployment (201), but its pod stays Pending because no node has room, and the API reports it as FAILING.
+
+- **Resource quotas only apply to namespaces the API creates.** Each one gets a ResourceQuota on CPU and memory requests from `quota.yaml`; namespaces that already existed, such as `default`, get none. Because of the quota, every create must include `resources.requests.cpu` and `resources.requests.memory`. Two limitations:
+  - The quota check runs on create and on scale-up. Image updates, restarts and rollbacks briefly start extra pods (25% more, at least 1) and can stall in a namespace that is nearly full.
+  - The check is not atomic: two requests at the same moment can both pass. Kubernetes still refuses whichever pods do not fit.
+
+- **Health checks accept HTTP probes only** (liveness and readiness). A container's `ready` flag in the detail view serves as its probe status.
+
+- **Log streaming uses Server-Sent Events rather than a WebSocket.** Logs only flow from the server to the browser, and SSE needs no extra dependency. Each stream starts with the pod's last 100 lines, then follows new ones.
+
+- **Rolling back renumbers revisions.** As with `kubectl rollout undo`, the restored template becomes the newest revision, so its old number leaves the history. Rolling back to a revision that is not in the history returns 400 `REVISION_NOT_FOUND`.

@@ -152,7 +152,7 @@ def list_deployments() -> None:
 
     payload = CREATE_PAYLOAD.copy()
     payload.update({
-        "name": "example"
+        "name": "web-1"
     })
     response = requests.post(
         url  = BASE_URL,
@@ -286,8 +286,6 @@ def rollback_info(uid: str) -> None:
         "Deployment history (stretch goal): track rollout history. "
         "Kubernetes keeps one ReplicaSet per pod template it has rolled out, numbered by revision; "
         "this lists them newest first and marks the current one.\n"
-        "So far: revision 1 (the create), revision 2 (the image update) and revision 3 (the restart). "
-        "Scaling changes no template, so it adds no revision."
     )
 
     print("\n- Press ENTER to make a request to this endpoint.")
@@ -331,7 +329,6 @@ def rollback_deployment(uid: str) -> None:
     print(json.dumps(data, indent=2, default=str))
 
     _kubectl(
-        f"kubectl rollout history deployment/{_name()} -n {_namespace()}",
         f"kubectl get deployment {_name()} -n {_namespace()} -o wide",
     )
 
@@ -422,10 +419,19 @@ def stream_logs(uid: str) -> None:
 if (__name__ == "__main__"):
     try:
 
+        print()
         print(
-            "\nThis is a demo of all the API endpoints within this project.\n"
-            "Press ENTER when you're ready to start."
+            "In this demo, we will send requests to all the API endpoints within this project.\n"
+            "I recommend cross-checking the API's response data and what we expect to happen within the cluster\n"
+            "either using the UI (`http://127.0.0.1:5000/`) or using `kubectl` commands we print along the way."
         )
+        print()
+        print("NOTE: Please make sure that:\n" 
+            "- Minikube is running.\n"
+            "- The API is live (`python run.py` is running)."
+        )
+        print()
+        print("Press ENTER to continue.")
         _wait()
 
         uid: str = create_deployment()

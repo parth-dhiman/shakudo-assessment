@@ -1,7 +1,6 @@
 # Standard imports.
 import json
 import subprocess
-import textwrap
 import time
 import uuid
 from collections import Counter
@@ -15,73 +14,36 @@ from typing import (
 
 # Third-party imports.
 import requests
+import pyperclip
 
 BASE_URL: str = "http://127.0.0.1:5000/api/deployments"
 
-# ==================== Settings and payloads (tweak these) ====================
+# ==================== Payloads ====================
 
-# A namespace the API creates, so it gets the CPU/memory quota from quota.yaml (1 CPU and 2Gi of requests).
+# A namespace the API creates.
 NAMESPACE: str = "failure-demo"
 
 # Small pod requests: every failure below is about its scenario, never about the quota by accident.
-REQUESTS: Dict[str, str] = {"cpu": "50m", "memory": "64Mi"}
+REQUESTS: Dict[str, str] = {
+    "cpu": "50m",
+    "memory": "64Mi",
+}
 
-# A valid request; each Part A case breaks exactly one field of it.
+# Used to test invalid inputs.
 BASE_PAYLOAD: Dict[str, Any] = {
-    "name":      "invalid-demo",
+    "name":      "web",
     "namespace": NAMESPACE,
     "image":     "nginx:latest",
     "replicas":  1,
     "resources": {"requests": REQUESTS},
 }
 
-def _with(**changes: Any) -> Dict[str, Any]:
+def _with(changes: Dict[str, Any]) -> Dict[str, Any]:
     return {**BASE_PAYLOAD, **changes}
 
-def _without(key: str) -> Dict[str, Any]:
-    return {k: v for (k, v) in BASE_PAYLOAD.items() if k != key}
+def _without(keys: List[str]) -> Dict[str, Any]:
+    return {k: v for (k, v) in BASE_PAYLOAD.items() if (k not in keys)}
 
-INVALID_CASES: List[Dict[str, Any]] = [
-    {
-        "title":   "Bad image format",
-        "why":     "Image references are lowercase, so `NGINX:latest` is not a valid image.",
-        "change":  '"image": "NGINX:latest"',
-        "payload": _with(image="NGINX:latest"),
-    },
-    {
-        "title":   "Negative replicas",
-        "why":     "A replica count cannot be below 0.",
-        "change":  '"replicas": -1',
-        "payload": _with(replicas=-1),
-    },
-    {
-        "title":   "Invalid resource value",
-        "why":     "`lots` is not a Kubernetes quantity (valid ones look like `100m`, `0.5` or `64Mi`).",
-        "change":  '"resources": {"requests": {"cpu": "lots", ...}}',
-        "payload": _with(resources={"requests": {"cpu": "lots", "memory": "64Mi"}}),
-    },
-    {
-        "title":   "DNS-incompatible name",
-        "why":     "Names become DNS names: lowercase letters, digits and '-', starting with a letter.",
-        "change":  '"name": "Web_App"',
-        "payload": _with(name="Web_App"),
-    },
-    {
-        "title":   "Missing required field",
-        "why":     "`image` is required, and this request leaves it out.",
-        "change":  '"image" removed',
-        "payload": _without("image"),
-    },
-]
-
-# Part A: created once, then created again (409) and scaled past the quota (403).
-DUPLICATE_PAYLOAD: Dict[str, Any] = _with(name="duplicate")
-
-# 30 pods x 50m = 1.5 CPU, more than the namespace's 1 CPU quota.
-QUOTA_REPLICAS: int = 30
-
-# Part B: the healthy baseline, nginx x3. Its readiness check starts 10 s after a container starts,
-# so the in-between states (PROGRESSING, DEGRADED, FAILING) stay on screen long enough to read.
 WEB_PAYLOAD: Dict[str, Any] = {
     "name":      "web",
     "namespace": NAMESPACE,
@@ -96,12 +58,8 @@ WEB_PAYLOAD: Dict[str, Any] = {
     },
 }
 
-# Part B: the image tag that does not exist (TASK.md's suggested scenario).
 BAD_IMAGE: str = "nginx:nonexistent"
 
-# Part B: a container that prints an error and exits at once, every time it is started.
-# Like a real web app it has a readiness check on its port; without one, Kubernetes would count the container
-# as ready for the split second it runs before crashing.
 CRASHER_PAYLOAD: Dict[str, Any] = {
     "name":      "crasher",
     "namespace": NAMESPACE,
@@ -109,12 +67,8 @@ CRASHER_PAYLOAD: Dict[str, Any] = {
     "replicas":  1,
     "command":   ["sh", "-c", "echo 'Starting up...'; echo 'Fatal: missing config file /etc/app.conf'; exit 1"],
     "resources": {"requests": REQUESTS},
-    "readiness_probe": {
-        "http_get": {"port": 8080, "path": "/healthz"},
-    },
 }
 
-# Part B: asks for 64 CPUs. In `default`, which has no quota (the API did not create it), so Kubernetes decides.
 TOO_BIG_PAYLOAD: Dict[str, Any] = {
     "name":      "too-big",
     "namespace": "default",
@@ -148,115 +102,6 @@ def _wait() -> None:
 def _separator() -> None:
     print("-"*100 + '\n')
 
-def _kubectl(*commands: str) -> None:
-    print("\nRun this command to check this on your actual cluster:" if len(commands) == 1
-          else "\nRun these commands to check this on your actual cluster:")
-    for command in commands:
-        print(f"    {command}")
-
-def _web_page(text: str) -> None:
-    print(f"\nIn the web page (http://127.0.0.1:5000): {text}")
-
-def _run(command: List[str]) -> None:
-    # Demo-only fault injection (deleting pods), not part of the API.
-    print(f"    $ {' '.join(command)}")
-    subprocess.run(command, capture_output=True)
-
-def _cleanup() -> None:
-    # Demo housekeeping, not part of the API: the namespace, and the one deployment that lives in `default`.
-    # kubectl waits until the namespace is gone, so a rerun never meets a namespace that is still terminating.
-    commands: List[List[str]] = [
-        ["kubectl", "delete", "deployment", TOO_BIG_PAYLOAD["name"], "-n", TOO_BIG_PAYLOAD["namespace"], "--ignore-not-found"],
-        ["kubectl", "delete", "namespace", NAMESPACE, "--ignore-not-found"],
-    ]
-    try:
-        for command in commands:
-            print(f"    {' '.join(command)}")
-            subprocess.run(command, capture_output=True)
-    except FileNotFoundError:
-        print("kubectl not found; run the commands above yourself.")
-
-def _pod_state(pod: Dict[str, Any]) -> str:
-    # One word per pod: its container's state, or the pod phase while no container exists yet.
-    containers: List[Dict[str, Any]] = pod.get("containers") or []
-    if not containers:
-        return pod.get("phase") or "Pending"
-    state: Dict[str, Any] = containers[0].get("state") or {}
-    if "running" in state:
-        return "Running" if containers[0].get("ready") else "Running (not ready)"
-    if "waiting" in state:
-        return (state["waiting"] or {}).get("reason") or "Waiting"
-    if "terminated" in state:
-        return (state["terminated"] or {}).get("reason") or "Terminated"
-    return pod.get("phase") or "Unknown"
-
-def _pod_message(pod: Dict[str, Any]) -> str:
-    # Kubernetes' explanation of a waiting or terminated container, when it gives one.
-    containers: List[Dict[str, Any]] = pod.get("containers") or []
-    state: Dict[str, Any] = (containers[0].get("state") or {}) if containers else {}
-    detail: Dict[str, Any] = state.get("waiting") or state.get("terminated") or {}
-    return detail.get("message") or ""
-
-def _status_line(detail: Dict[str, Any]) -> str:
-    replicas: Dict[str, Any] = detail.get("replicas") or {}
-    counts = Counter(_pod_state(pod) for pod in detail.get("pods") or [])
-    pods: str = ", ".join(f"{n} {state}" for (state, n) in sorted(counts.items())) or "none yet"
-    rollout: str = next(
-        (c.get("reason") for c in detail.get("conditions") or [] if c.get("type") == "Progressing"),
-        None,
-    ) or "not started"
-    return (
-        f"{detail.get('status', '?'):<11}  ready {replicas.get('ready', 0)}/{replicas.get('desired', 0)}   "
-        f"pods: {pods:<44}  rollout: {rollout}"
-    )
-
-def _timeline(
-    uid:        str,
-    target:     str,
-    must_leave: bool = False,
-    also:       Optional[Callable[[Dict[str, Any]], bool]] = None,
-) -> Dict[str, Any]:
-    # Polls GET /api/deployments/<uid> and prints a line whenever the status, replica counts or pod states change,
-    # until the status is `target` (after first moving away from it, with must_leave) and `also` holds.
-    print("\nLive status, polled from the API every second (a line appears whenever something changes):")
-    start: float = time.monotonic()
-    left: bool = not must_leave
-    last: Optional[str] = None
-    while True:
-        detail: Dict[str, Any] = requests.get(f"{BASE_URL}/{uid}").json()
-        line: str = _status_line(detail)
-        if (line != last):
-            print(f"    [+{time.monotonic() - start:>3.0f}s] {line}")
-            last = line
-        if (detail.get("status") != target):
-            left = True
-        elif left and ((also is None) or also(detail)):
-            return detail
-        if (time.monotonic() - start > WAIT_SECONDS):
-            print(f"    (stopped waiting after {WAIT_SECONDS} s)")
-            return detail
-        time.sleep(POLL_SECONDS)
-
-def _show_levels(detail: Dict[str, Any]) -> None:
-    # What GET /api/deployments/<uid> reports at the deployment level and for each pod.
-    replicas: Dict[str, Any] = detail.get("replicas") or {}
-    print("\nWhat the API reports at the deployment level:")
-    print(
-        f"    status {detail.get('status')}: desired {replicas.get('desired')}, ready {replicas.get('ready')}, "
-        f"available {replicas.get('available')}, unavailable {replicas.get('unavailable')}"
-    )
-    for condition in detail.get("conditions") or []:
-        print(f"    condition {condition.get('type')}={condition.get('status')} ({condition.get('reason')}): {condition.get('message')}")
-    print("\n...and for each pod:")
-    for pod in sorted(detail.get("pods") or [], key=lambda p: p["name"]):
-        print(
-            f"    {pod['name']}: phase {pod.get('phase')}, restarts {pod.get('restartCount')}, "
-            f"node {pod.get('node') or '(not scheduled)'}, container state {_pod_state(pod)}"
-        )
-        message: str = _pod_message(pod)
-        if message:
-            print(f"        {message[:200]}")
-
 def _create(payload: Dict[str, Any]) -> Dict[str, Any]:
     response = requests.post(
         url  = BASE_URL,
@@ -268,12 +113,37 @@ def _create(payload: Dict[str, Any]) -> Dict[str, Any]:
     print(json.dumps(data, indent=2, default=str))
     return data
 
-# ==================== Part A: requests the API refuses ====================
+def _delete_namespace() -> None:
+    # Demo housekeeping, not part of the API: removes everything this run created, even after Ctrl+C.
+    # kubectl waits until the namespace is gone, so a rerun never meets a namespace that is still terminating.
+    namespace: str = NAMESPACE
+    if namespace in ("default", "kube-system", "kube-public", "kube-node-lease"):
+        return
+    command = ["kubectl", "delete", "namespace", namespace, "--ignore-not-found"]
+    print(f"\nCleaning up: {' '.join(command)}  (this takes a few seconds)")
+    try:
+        subprocess.run(command)
+    except FileNotFoundError:
+        print(f"kubectl not found; delete the namespace yourself: {' '.join(command)}")
+
+def _delete_too_big() -> None:
+    # `too-big` lives in `default`, which must never be deleted, so it is removed on its own.
+    command = [
+        "kubectl", "delete", "deployment", TOO_BIG_PAYLOAD["name"],
+        "-n", TOO_BIG_PAYLOAD["namespace"], "--ignore-not-found",
+    ]
+    print(f"Cleaning up: {' '.join(command)}")
+    try:
+        subprocess.run(command)
+    except FileNotFoundError:
+        print(f"kubectl not found; delete the deployment yourself: {' '.join(command)}")
+
+# ==================== Functions To Run Failure Tests ====================
 
 def invalid_input() -> None:
 
     _separator()
-    print("Failure Mode: Invalid Input.")
+    print("FAILURE MODE: Invalid Input.")
     print(
         "Description (as provided in document): return 400 for invalid input "
         "(bad image format, negative replicas, invalid resource values, DNS-incompatible names), "
@@ -281,33 +151,89 @@ def invalid_input() -> None:
     )
     print()
     print(
-        "Each request below has a valid payload with exactly one field invalid. " 
-        "The API validates the request body before sending any request to the Kubernetes API. "
-        "So in each of these cases, no deployment actually gets created. "
+        "This failure mode has 5 sub-parts, one for each example mentioned in the document: "
+        "bad image format, negative replicas, invalid resource values, DNS-incompatible names."
     )
     print()
     print("In each of these invalid input cases, the base payload is:")
-    print(json.dumps(WEB_PAYLOAD))
+    print(json.dumps(BASE_PAYLOAD, indent=2, default=str))
+    print()
+    print("In each sub-part, we will (on purpose) override one field of this base payload and make it invalid.")
+    print(
+        "The API validates the request body before sending any request to the Kubernetes API. "
+        "So we expect to get an appropriate error status code from the API with a message telling what field we got wrong."
+    )
 
     print(f"\n- Press ENTER to continue.")
     _wait()
+
+    INVALID_CASES: List[Dict[str, Any]] = [
+        {
+            "title":   "Bad image format",
+            "label":    "`image` has been set to `NGINX:latest`",
+            "why":     "Image references are lowercase, so `NGINX:latest` is not a valid image.",
+            "change":  {
+                "image": "NGINX:latest",
+            },
+        },
+        {
+            "title":   "Negative replicas",
+            "label":    "`replicas` has been set to -1",
+            "why":     "A replica count cannot be below 0.",
+            "change":  {
+                "replicas": -1,
+            },
+        },
+        {
+            "title":   "Invalid resource value",
+            "label":    "`resources.cpu` has been set to `lots`",
+            "why":     "`lots` is not a Kubernetes quantity (valid ones look like `100m`, `0.5` or `64Mi`).",
+            "change":  {
+                "resources": {
+                    "requests": {
+                        "cpu": "lots",
+                        "memory": "64Mi",
+                    }
+                }
+            },
+        },
+        {
+            "title":   "DNS-incompatible name",
+            "label":    "`name` has been set to `Our App`",
+            "why":     "Names can only have: lowercase letters, digits and '-', starting with a letter.",
+            "change":  {
+                "name": "Our App",
+            },
+        },
+        {
+            "title":   "Missing required field",
+            "label":    "`image` has been removed from the payload.",
+            "why":     "`image` is required, and this request leaves it out.",
+            "remove":  ["image"],
+        },
+    ]
 
     for (number, case) in enumerate(INVALID_CASES, start=1):
         
         _separator()
 
-        response = requests.post(
-            url  = BASE_URL,
-            json = case["payload"],
-        )
-        data: Dict[str, Any] = response.json()
+        print(f"Sub-Part {number}. {case['title']}")
+        print(f"- What Changed: {case['label']}")
+        print(f"- Why it should fail: {case['why']}")
 
-        print(f"{number}. {case['title']}: {case['why']}")
-        print(f"   Change from the base payload: {case['change']}")
-        print("\n- Press ENTER to run this request.")
+        if ("change") in case:
+            payload: Dict[str, Any] = _with(case['change'])
+        if ("remove" in case):
+            payload = _without(case["remove"])
+
+        print("Our payload is set to:")
+        print(json.dumps(payload, indent=2, default=str))
+
+        print("\n- Press ENTER to run this request: POST /api/deployments")
         _wait()
-        print(f"   Server Responded With Status Code {response.status_code}:")
-        print(json.dumps(data, indent=2, default=str))
+        
+        _create(payload)
+
         print()
         print(f"\n- Press ENTER to continue to next invalid input request.")
         _wait()
@@ -318,46 +244,48 @@ def invalid_input() -> None:
 def unknown_id() -> None:
 
     _separator()
-    print("Failure Mode: Unknown Deployment ID.")
-    print(
-        "Description (as provided in document): return 404 when a deployment ID doesn't exist.\n"
-        "Deployments are identified by their Kubernetes UID. This one is a well-formed UID that no deployment has."
-    )
-    missing: str = str(uuid.uuid4())
+    print("FAILURE MODE: Unknown Deployment ID.")
+    print("Description (as provided in document): return 404 when a deployment ID doesn't exist.\n")
 
-    print(f"\n- Press ENTER to request GET /api/deployments/{missing}")
+    missing: str = str(uuid.uuid4())
+    print("- We have generated a random UUID which does not exist in our cluster.")
+    print(f"\n- Press ENTER to run this request: GET /api/deployments/{missing}")
     _wait()
 
     response = requests.get(f"{BASE_URL}/{missing}")
     print(f"Server Responded With Status Code {response.status_code}")
     print("The Response Body is:")
-    print(json.dumps(response.json(), indent=2))
+    print(json.dumps(response.json(), indent=2, default=str))
 
-    print("\n- Press ENTER to continue to the next failure.\n")
+    print("\n- Press ENTER to continue to the next failure mode.\n")
     _wait()
 
 def duplicate_name() -> Optional[str]:
 
     _separator()
-    print("Part A, failure 3: duplicate name -> 409")
+    print("FAILURE MODE: Duplication")
     print(
-        "Description (as provided in document): return 409 when creating a deployment with a name that already "
-        f"exists in the same namespace.\nWe create `{DUPLICATE_PAYLOAD['name']}` in `{NAMESPACE}`, then send the exact same request again."
+        "Description (as provided in document): return 409 when creating a deployment "
+        "with a name that already exists in the same namespace."
     )
-    print("\nThe request payload is:")
-    print(json.dumps(DUPLICATE_PAYLOAD, indent=2))
+    print(
+        f"\nWe will first create a deployment with name `test-deployment` "
+        f"in namespace `{NAMESPACE}`, then send the exact same request again."
+    )
+
+    payload: Dict[str, Any] = _with({"name": "test-duplicate"})
+    print("\nThe request payload (for both requests) is:")
+    print(json.dumps(payload, indent=2))
 
     print("\n- Press ENTER to create it the first time.")
     _wait()
-    data: Dict[str, Any] = _create(DUPLICATE_PAYLOAD)
+    data: Dict[str, Any] = _create(payload)
 
     print("\n- Press ENTER to send the same request again.")
     _wait()
-    _create(DUPLICATE_PAYLOAD)
+    _create(payload)
 
-    _kubectl(f"kubectl get deployment {DUPLICATE_PAYLOAD['name']} -n {NAMESPACE}")
-
-    print("\n- Press ENTER to continue to the next failure.\n")
+    print("\n- Press ENTER to continue to the next failure mode.\n")
     _wait()
 
     return data.get("uid")
@@ -365,69 +293,78 @@ def duplicate_name() -> Optional[str]:
 def quota_exceeded(uid: Optional[str]) -> None:
 
     _separator()
-    print("Part A, failure 4: not enough quota -> 403 (stretch goal: resource quotas)")
+    print("FAILURE MODE: Resource Quota Exceeded (Part of Stretch Goal).")
     print(
-        "Every namespace the API creates gets a ResourceQuota from quota.yaml (1 CPU and 2Gi of requests here). "
+        "Every namespace the API creates gets a ResourceQuota from quota.yaml (originally: 1 CPU and 2Gi of requests here). "
         "Kubernetes enforces a quota pod by pod: it would accept an oversized Deployment and then quietly refuse "
-        "its pods. So the API checks first and refuses the request itself, with Kubernetes' own wording.\n"
-        f"Two attempts, each needing {QUOTA_REPLICAS} pods x {REQUESTS['cpu']} = more than 1 CPU: creating a new deployment, "
-        f"and scaling `{DUPLICATE_PAYLOAD['name']}` up."
+        "its pods. So our API checks first and if the deployment create/patch request would violate the ResourceQuota,"
+        "it stright-up refuses the request without passing it to the Kubernetes API.\n"
+    )
+    print()
+
+    print(
+        "Let's first create a new deployment, and request resources which will exceed our ResourceQuota "
+        " (set to: 1 CPU and 2Gi, unless edits were made to `quota.yaml`), and see what the API returns."
     )
 
+    payload: Dict[str, Any] = _with({
+        "name": "too-many-pods",
+        "replicas": 30,
+    })
+    print("Our request payload is set to:")
+    print(json.dumps(payload, indent=2, default=str))
+    print(
+        "Our request is set to have 30 pods, and since requests.resources apply on a per-pod level,"
+        "we're asking for {(50m*30) = 1500m = 1.5 CPU}, which exceeds our set quota of 1 CPU."
+    )
+    
     print("\n- Press ENTER to try creating the oversized deployment.")
     _wait()
-    _create(_with(name="too-many", replicas=QUOTA_REPLICAS))
+    
+    _create(payload)
 
     if uid:
-        print(f"\n- Press ENTER to try scaling `{DUPLICATE_PAYLOAD['name']}` to {QUOTA_REPLICAS} replicas.")
+        payload: Dict[str, Any] = {"replicas": 40}
+        print(
+            "\nNow, let's try scaling our `test-deployment` "
+            "(which we created in the duplication failure test)"
+            "to 40 replicas. We will use our PATCH endpoint for this."
+        )
+        print("Our request payload is simply set to (that's enough for PATCH request to work):")
+        print(json.dumps(payload))
+        print("Press ENTER to run the PATCH /api/deployments request.")
         _wait()
+
         response = requests.patch(
             url  = f"{BASE_URL}/{uid}",
-            json = {"replicas": QUOTA_REPLICAS},
+            json = {"replicas": 40},
         )
         print(f"Server Responded With Status Code {response.status_code}")
         print("The Response Body is:")
         print(json.dumps(response.json(), indent=2))
 
-    _kubectl(
-        f"kubectl get resourcequota -n {NAMESPACE}",
-        f"kubectl get deployments -n {NAMESPACE}    (no `too-many`, and `{DUPLICATE_PAYLOAD['name']}` still has 1 replica)",
-    )
-
     print(
-        "\nOne more error the API maps: if the Kubernetes API server cannot be reached, requests get "
-        "503 K8S_UNREACHABLE. It is not shown live, because that means stopping the cluster."
+        "\nOne more error that is kinda hard to demo here: "
+        "If the Kubernetes API server cannot be reached, requests return 503 status code."
+        "You can test this by turning off minikube later, and sending an API request."
     )
 
-    print("\n- Press ENTER to continue to Part B.\n")
+    print("\n- Press ENTER to continue.\n")
     _wait()
-
-# ==================== Part B: deployments that break on the cluster ====================
 
 def healthy_rollout() -> Optional[str]:
 
     _separator()
-    print("Part B, status 1: UNKNOWN -> PROGRESSING -> HEALTHY")
-    print(HEALTH_RULES)
-    print(
-        "First, the baseline: nginx with 3 replicas. The POST response says UNKNOWN, because Kubernetes has not "
-        "processed the new Deployment yet. It is PROGRESSING while the pods start (their readiness check waits "
-        "10 s), and HEALTHY once all 3 are ready."
-    )
+    print("STATUS TRACKING: For this part, we will track the status of a healthy rollout.")
     print("\nThe request payload is:")
     print(json.dumps(WEB_PAYLOAD, indent=2))
 
-    print("\n- Press ENTER to create it and follow its status.")
+    print("\n- Press ENTER to create it and then follow its status in the UI.")
     _wait()
     data: Dict[str, Any] = _create(WEB_PAYLOAD)
     uid: Optional[str] = data.get("uid")
-    if uid:
-        _timeline(uid, "HEALTHY")
 
-    _web_page("the dashboard shows `web` turning from yellow (PROGRESSING) to green (HEALTHY).")
-    _kubectl(f"kubectl get deployment {WEB_PAYLOAD['name']} -n {NAMESPACE}")
-
-    print("\n- Press ENTER to continue to the next status.\n")
+    print("\n- Press ENTER to continue to the next status test.\n")
     _wait()
 
     return uid
@@ -435,44 +372,30 @@ def healthy_rollout() -> Optional[str]:
 def degraded(uid: str) -> None:
 
     _separator()
-    print("Part B, status 2: DEGRADED (some, but not all, replicas ready)")
-    print(
-        "We delete one of the three pods, as if it had crashed. Kubernetes starts a replacement straight away, "
-        "but the replacement is not ready for about 10 s. Meanwhile 2 of 3 replicas are ready: DEGRADED. "
-        "Then it recovers to HEALTHY on its own.\n"
-        "(The deleted pod is still listed for a moment while it shuts down, so the pod counts briefly add up to 4.)"
-    )
+    print("STATUS: DEGRADED i.e., some (but not all) replicas are ready.")
+    print("To simulate a pod crashing, we will now suddenly delete one of the three pods (of the `web` deployment).")
+    print("What we expect: Going from HEALTHY to DEGRADED back to HEALTHY.")
 
-    print("\n- Press ENTER to delete one pod and follow the status.")
-    _wait()
     pods: List[Dict[str, Any]] = requests.get(f"{BASE_URL}/{uid}").json().get("pods") or []
     victim: str = sorted(pod["name"] for pod in pods)[0]
-    _run(["kubectl", "delete", "pod", victim, "-n", NAMESPACE, "--wait=false"])
-    _timeline(uid, "HEALTHY", must_leave=True)
+    print()
+    print("Run this command (already copied to your clipboard) and quickly switch to the UI:")
+    print(f"kubectl delete pod {victim} -n {NAMESPACE} --wait=false")
+    pyperclip.copy(f"kubectl delete pod {victim} -n {NAMESPACE} --wait=false")
 
-    _web_page("`web` briefly turns yellow (DEGRADED) with 2/3 ready, then green again.")
-    _kubectl(f"kubectl get pods -n {NAMESPACE} -l app.kubernetes.io/name={WEB_PAYLOAD['name']}")
-
-    print("\n- Press ENTER to continue to the next status.\n")
+    print("\n- Press ENTER to continue to the next status test.\n")
     _wait()
 
 def no_replicas_ready(uid: str) -> None:
 
     _separator()
-    print("Part B, status 3: FAILING (no replicas ready)")
-    print(
-        "This time all three pods go at once. Until their replacements are ready, none of the replicas the "
-        "Deployment wants is ready: FAILING. It recovers on its own, through DEGRADED, back to HEALTHY.\n"
-        "(The deleted pods are still listed for a moment while they shut down.)"
-    )
-
-    print("\n- Press ENTER to delete all three pods and follow the status.")
-    _wait()
-    _run(["kubectl", "delete", "pods", "-n", NAMESPACE, "-l", f"app.kubernetes.io/name={WEB_PAYLOAD['name']}", "--wait=false"])
-    _timeline(uid, "HEALTHY", must_leave=True)
-
-    _web_page("`web` turns red (FAILING) with 0/3 ready, then green again.")
-    _kubectl(f"kubectl get pods -n {NAMESPACE} -l app.kubernetes.io/name={WEB_PAYLOAD['name']}")
+    print("STATUS: FAILING i.e., no replicas are ready.")
+    print("To simulate ALL pods crashing, we will suddenly delete all the pods (of the `web` deployment).")
+    print("What we expect: Going from HEALTHY to FAILING to DEGRADED back to HEALTHY.")
+    print()
+    print("Run this command (already copied to your clipboard) and quickly switch to the UI:")
+    print(f"kubectl delete pods -n {NAMESPACE} -l app.kubernetes.io/name={WEB_PAYLOAD['name']} --wait=false")
+    pyperclip.copy(f"kubectl delete pods -n {NAMESPACE} -l app.kubernetes.io/name={WEB_PAYLOAD['name']} --wait=false")
 
     print("\n- Press ENTER to continue to the next status.\n")
     _wait()
@@ -480,35 +403,28 @@ def no_replicas_ready(uid: str) -> None:
 def bad_image(uid: str) -> None:
 
     _separator()
-    print("Part B, status 4: FAILING (ImagePullBackOff), the scenario suggested in the document")
-    print(
-        f"Description (as provided in document): deploy a deliberately bad image (e.g., {BAD_IMAGE}) and verify "
-        "your API correctly reports the failure state (ImagePullBackOff) at both the deployment and pod level.\n"
-        f"We change `web`'s image to `{BAD_IMAGE}`. Kubernetes starts one new pod with it first and keeps the "
-        "3 old pods serving until the new one is ready, which never happens. Kubernetes itself would only call "
-        "this rollout failed after its 10-minute progress deadline; the API reports FAILING as soon as a pod "
-        "cannot pull its image."
-    )
+    print("STATUS: FAILING due to ImagePullBackOff.")
+    print(f"We'll 'patch' our `web` deployment to a bad image ({BAD_IMAGE}).")
+    print("What we expect:")
+    print("- The document states to classify CrashLoopBackOff detection as FAILING; we do the same for ErrImagePull/ImagePullBackOff and for pods that can't be scheduled (Unschedulable).")
+    print("- Initially, all 3 of our pods are running and ready, so we have a HEALTHY status for the deployment.")
+    print("- Then, to roll out the patch update, Kubernetes starts 1 new pod with the new image on top of our 3 (maxSurge: 25% of 3, rounded up to 1) and keeps all 3 old pods running until the new one is ready (maxUnavailable: 25% of 3, rounded down to 0). For the few seconds the new pod is being created, the status is PROGRESSING. But the new pod never becomes ready, because its image can't be pulled: its container waits with ErrImagePull, then ImagePullBackOff.")
+    print("- When ErrImagePull or ImagePullBackOff is detected in any of the deployment's pods, our deployment status changes to FAILING, even though the 3 old pods are still ready (3/3).")
+    print("- Kubernetes itself keeps reporting the rollout as in progress (Progressing=True) until its 10-minute progress deadline passes; our status reports the failure straight away.")
+    print("- In the UI, the deployment turns red, and its pod table shows the new pod's ImagePullBackOff next to the 3 running old pods: the failure is visible at both the deployment and the pod level.")
 
-    print("\n- Press ENTER to send the image update and follow the status.")
+    print()
+    payload: Dict[str, Any] = {"image": BAD_IMAGE}
+    print(f"Our PATCH request payload is set to:")
+    print(json.dumps(payload, indent=2))
+
+    print("\n- Press ENTER to send the PATCH request, quickly switch to the UI to track its status.")
     _wait()
     response = requests.patch(
         url  = f"{BASE_URL}/{uid}",
-        json = {"image": BAD_IMAGE},
+        json = payload,
     )
-    print(f"Server Responded With Status Code {response.status_code} (the PATCH itself is valid)")
-    detail: Dict[str, Any] = _timeline(
-        uid, "FAILING",
-        also = lambda d: any(_pod_state(pod) == "ImagePullBackOff" for pod in d.get("pods") or []),
-    )
-    _show_levels(detail)
-
-    _web_page("`web` is red (FAILING). In its detail view, the new pod shows ImagePullBackOff, and the "
-              "Logs panel for that pod explains that the image can't be pulled.")
-    _kubectl(
-        f"kubectl get pods -n {NAMESPACE} -l app.kubernetes.io/name={WEB_PAYLOAD['name']}",
-        f"kubectl describe deployment {WEB_PAYLOAD['name']} -n {NAMESPACE}",
-    )
+    print(f"Server Responded With Status Code {response.status_code} (the PATCH itself is valid).")
 
     print("\n- Press ENTER to continue to the next status.\n")
     _wait()
@@ -516,31 +432,21 @@ def bad_image(uid: str) -> None:
 def crash_loop() -> None:
 
     _separator()
-    print("Part B, status 5: FAILING (CrashLoopBackOff)")
-    print(
-        "Description (as provided in document): FAILING when no replicas are ready or CrashLoopBackOff is detected.\n"
-        "A container that prints an error and exits every time it starts. Kubernetes restarts it, waiting longer "
-        "after each crash (10 s, 20 s, 40 s, ...); that waiting state is CrashLoopBackOff."
-    )
-    print("\nThe request payload is:")
+    print("STATUS: FAILING due to CrashLoopBackOff.")
+    print(f"We'll create a deployment using the payload:")
     print(json.dumps(CRASHER_PAYLOAD, indent=2))
+    print()
+    print("The container keeps crashing right after it starts, because its command exits with code 1.")
+    print("What we expect:")
+    print("- The container starts, prints 'Starting up...' and 'Fatal: missing config file /etc/app.conf', then exits with code 1.")
+    print("- It has no readiness check, so Kubernetes counts it as ready the moment it starts: for a second, the status may show HEALTHY (1/1 ready).")
+    print("- Once it has crashed, no replica is ready, so the status changes to FAILING (the document's 'no replicas ready'). Its container state is Error (terminated, exit code 1).")
+    print("- Kubernetes restarts the container every time it exits (a Deployment's pods always restart), waiting longer after each crash: 10 s, then 20 s, 40 s and so on. While it waits, the container's state is CrashLoopBackOff, which also makes the status FAILING (the document's 'CrashLoopBackOff detected').")
+    print("- In the UI, the deployment turns red, and its pod table shows CrashLoopBackOff with a climbing restart count. In the Logs panel, tick 'Previous container' to read why it crashed.")
 
-    print("\n- Press ENTER to create it and follow its status.")
+    print("\n- Press ENTER to create it, then switch to the UI to track its status.")
     _wait()
     data: Dict[str, Any] = _create(CRASHER_PAYLOAD)
-    uid: Optional[str] = data.get("uid")
-    if uid:
-        detail: Dict[str, Any] = _timeline(
-            uid, "FAILING",
-            also = lambda d: any(_pod_state(pod) == "CrashLoopBackOff" for pod in d.get("pods") or []),
-        )
-        _show_levels(detail)
-
-    _web_page("`crasher` is red (FAILING). In its Logs panel, tick 'Previous container' to read why it crashed.")
-    _kubectl(
-        f"kubectl get pods -n {NAMESPACE} -l app.kubernetes.io/name={CRASHER_PAYLOAD['name']}",
-        f"kubectl logs deployment/{CRASHER_PAYLOAD['name']} -n {NAMESPACE} --previous",
-    )
 
     print("\n- Press ENTER to continue to the next status.\n")
     _wait()
@@ -548,32 +454,24 @@ def crash_loop() -> None:
 def unschedulable() -> None:
 
     _separator()
-    print("Part B, status 6: FAILING (pod cannot be scheduled: insufficient resources)")
+    print("STATUS: FAILING, because its pod cannot be scheduled.")
     print(
         f"A pod that asks for {TOO_BIG_PAYLOAD['resources']['requests']['cpu']} CPUs, more than the node has. "
         "In a namespace the API created, the quota would refuse this with a 403 (Part A). This one goes to "
         f"`{TOO_BIG_PAYLOAD['namespace']}`, which existed before and has no quota, so Kubernetes itself decides: it "
         "accepts the Deployment, but its scheduler cannot place the pod, which stays Pending."
     )
+    print("What we expect:")
+    print("- The create succeeds (201): Kubernetes accepts the Deployment and creates its pod. So this is not a failed Kubernetes API call (no 500); the problem only shows up in the deployment's status.")
+    print(f"- The scheduler finds no node with {TOO_BIG_PAYLOAD['resources']['requests']['cpu']} free CPUs, so the pod stays Pending, with no node and no container, and its PodScheduled condition is False with reason Unschedulable ('Insufficient cpu').")
+    print("- An unschedulable pod makes the status FAILING straight away. Kubernetes itself keeps retrying the pod, and keeps reporting the rollout as in progress (Progressing=True) until its 10-minute progress deadline.")
+    print("- In the UI, the deployment turns red and its pod shows Pending, with no node. The API's pod view doesn't include the scheduler's message; `kubectl describe pod` shows it under Events.")
     print("\nThe request payload is:")
     print(json.dumps(TOO_BIG_PAYLOAD, indent=2))
 
-    print("\n- Press ENTER to create it and follow its status.")
+    print("\n- Press ENTER to create it, then switch to the UI to track its status.")
     _wait()
     data: Dict[str, Any] = _create(TOO_BIG_PAYLOAD)
-    uid: Optional[str] = data.get("uid")
-    if uid:
-        detail: Dict[str, Any] = _timeline(
-            uid, "FAILING",
-            also = lambda d: any(pod.get("phase") == "Pending" for pod in d.get("pods") or []),
-        )
-        _show_levels(detail)
-
-    _kubectl(
-        f"kubectl get pods -n {TOO_BIG_PAYLOAD['namespace']} -l app.kubernetes.io/name={TOO_BIG_PAYLOAD['name']}",
-        f"kubectl describe pods -n {TOO_BIG_PAYLOAD['namespace']} -l app.kubernetes.io/name={TOO_BIG_PAYLOAD['name']}    "
-        "(Events: 'Insufficient cpu')",
-    )
 
     print("\n- Press ENTER to end the demo.\n")
     _wait()
@@ -581,19 +479,16 @@ def unschedulable() -> None:
 if (__name__ == "__main__"):
     try:
 
+        print()
         print(
-            "\nThis demo shows how the API fails, on purpose, in two parts:\n"
-            "  Part A: requests the API refuses, and the structured errors it returns (400, 404, 409, 403).\n"
-            "  Part B: deployments that break on the cluster, and how the API's health status (computed from live\n"
-            "          Deployment and Pod status, never cached) reports each one: UNKNOWN, PROGRESSING, HEALTHY,\n"
-            "          DEGRADED and FAILING.\n"
-            f"Everything runs in the namespace `{NAMESPACE}` (plus one deployment in `default`), and is deleted\n"
-            "when the demo ends, even if you stop it with Ctrl+C.\n"
-            "Keep the web page (http://127.0.0.1:5000) open next to this terminal to watch the colours change."
+            "In this demo, we will see the failure modes associated with our API and within the cluster.\n"
+            "I recommend cross-checking the API's response data and what we expect to happen within the cluster "
+            "using the UI (`http://127.0.0.1:5000`)"
         )
-        print("\nFirst, removing anything left over from an earlier run:")
-        _cleanup()
-        print("\nPress ENTER when you're ready to start.")
+        print()
+        print("NOTE: Please make sure that the API is live (`python run.py` is running).")
+        print()
+        print("Press ENTER to continue.")
         _wait()
 
         invalid_input()
@@ -604,6 +499,7 @@ if (__name__ == "__main__"):
         web_uid: Optional[str] = healthy_rollout()
         if (web_uid is None):
             raise SystemExit("Creating `web` failed; check the API and run again.")
+        
         degraded(web_uid)
         no_replicas_ready(web_uid)
         bad_image(web_uid)
@@ -615,5 +511,6 @@ if (__name__ == "__main__"):
     except KeyboardInterrupt:
         print("\nDemo interrupted.")
     finally:
-        print("\nCleaning up (this takes a few seconds):")
-        _cleanup()
+        # However the demo ends (finished, Ctrl+C or an error), delete everything it created.
+        _delete_namespace()
+        _delete_too_big()
